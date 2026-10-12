@@ -97,13 +97,33 @@ function categoryClass(score, findingsCount) {
  * @param {number} negativesCount count of ACTUAL negative findings (post
  *   classifyFinding split + boilerplate aggregate demotion → the same
  *   `negatives.length` the report's other sections count)
- * @returns {'CLEAN'|'WATCH'|'NEEDS ATTENTION'|'PRIORITY'} the DISPLAY state
+ * @returns {'CLEAN'|'WATCH'|'NEEDS ATTENTION'|'PRIORITY'|'MEASURED'} the
+ *   DISPLAY state
  */
-function categoryDisplayState(score, findingsCount, negativesCount) {
+function categoryDisplayState(score, findingsCount, negativesCount, metricsCount = 0) {
   const cls = categoryClass(score, findingsCount);
   if (cls === 'CLEAN' && Number(negativesCount) > 0) return 'WATCH';
+  // Job #2 (owner defect 2026-10-12): a category whose score comes only from
+  // NEUTRAL metric measurements — zero actual negative findings — must never
+  // wear a severity pill (WATCH / NEEDS ATTENTION / PRIORITY) next to its
+  // "Measurements only" line: that is the same class of contradiction as the
+  // 10-07 CLEAN fix. The stored findings array contains metric rows as well
+  // as negatives, so the band math alone cannot tell them apart; the metrics
+  // count (already computed at the card/focused-view call sites) can.
+  // MEASURED applies ONLY when the band would otherwise be a severity state —
+  // a CLEAN-band category's result is untouched, and a category with ≥1
+  // negative finding keeps its severity logic exactly as before.
+  if (Number(negativesCount) === 0 && Number(metricsCount) > 0 && cls !== 'CLEAN') return 'MEASURED';
   return cls;
 }
+
+/**
+ * Neutral one-liner for a METRICS-ONLY category card / focused view (Job #2):
+ * the score reflects the neutral measurements, not roastable findings — so the
+ * gray MEASURED pill never sits next to a severity-flavored explanation. Same
+ * line on both surfaces the owner reads (breakdown card + focused view).
+ */
+const MEASURED_LINE = 'Score reflects measurements — no roastable findings.';
 
 // Word-boundary truncation lives in src/truncate.js (report-trust fix
 // 2026-10-07) so the rules modules share ONE implementation; reportHtml
@@ -769,9 +789,12 @@ export function renderHtmlReport(scan) {
     // DISPLAY state (owner defect 2026-10-07): a CLEAN-band category with
     // actual negative findings promotes to WATCH — "Nothing meaningful to
     // roast here." must never render next to "N roasts — see receipts".
-    const cls = categoryDisplayState(sub, nFindings, negs);
+    const cls = categoryDisplayState(sub, nFindings, negs, metr);
     const stateClass = cls === 'NEEDS ATTENTION' ? 'cat-attention' : `cat-${cls.toLowerCase()}`;
-    const line = cls === 'CLEAN' ? 'Nothing meaningful to roast here.' : (CATEGORY_ONE_LINERS[key] ?? '');
+    // METRICS-ONLY (Job #2): the neutral MEASURED pill gets the neutral
+    // explanation, never the severity-flavored category one-liner.
+    const line = cls === 'CLEAN' ? 'Nothing meaningful to roast here.'
+      : (cls === 'MEASURED' ? MEASURED_LINE : (CATEGORY_ONE_LINERS[key] ?? ''));
     const findingsLine = negs > 0
       ? `<span class="cat-findings cat-findings-problem">${negs} roast${negs === 1 ? '' : 's'} — see receipts</span>`
       : (metr > 0 ? '<span class="cat-findings">Measurements only</span>' : '<span class="cat-findings cat-findings-clean">No roasts</span>');
@@ -1112,8 +1135,11 @@ export function renderHtmlReport(scan) {
       const nFindings = Array.isArray(rule.findings) ? rule.findings.length : 0;
       // DISPLAY state: same promotion as the card — a CLEAN-band category with
       // negative findings must not show a CLEAN pill in its focused view.
-      const cls = categoryDisplayState(sub, nFindings, g?.groups.length ?? 0);
-      stateLine = `\n    <span class="cv-score">${sub}<span class="cv-den">/100</span></span>\n    <span class="cv-state cv-state-${cls.toLowerCase().replace(/[^a-z0-9]+/g, '-')}">${esc(cls)}</span>\n    <span class="cv-line">${esc(CATEGORY_ONE_LINERS[key] ?? '')}</span>`;
+      const cls = categoryDisplayState(sub, nFindings, g?.groups.length ?? 0, g?.metrics.length ?? 0);
+      // METRICS-ONLY (Job #2): same neutral state + explanation as the card —
+      // the owner reads both surfaces.
+      const viewLine = cls === 'MEASURED' ? MEASURED_LINE : (CATEGORY_ONE_LINERS[key] ?? '');
+      stateLine = `\n    <span class="cv-score">${sub}<span class="cv-den">/100</span></span>\n    <span class="cv-state cv-state-${cls.toLowerCase().replace(/[^a-z0-9]+/g, '-')}">${esc(cls)}</span>\n    <span class="cv-line">${esc(viewLine)}</span>`;
     }
     // Compliment gate (audit Q2, owner-approved 2026-09-28): a category's
     // clean measurements render in its focused view ONLY when the category is
@@ -1376,6 +1402,7 @@ export function renderHtmlReport(scan) {
     .cat-attention { --cat: #fb923c; }
     .cat-priority { --cat: #f87171; }
     .cat-skipped { --cat: #8b8b95; }
+    .cat-measured { --cat: #8b8b95; }
     .cat-top { display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; }
     .cat-name { font-weight: 800; font-size: .95rem; letter-spacing: .03em; color: var(--ink); }
     .cat-go { color: var(--cat, #8b8b95); font-size: .69rem; font-weight: 800; text-transform: uppercase; letter-spacing: .09em; }
@@ -1512,6 +1539,7 @@ export function renderHtmlReport(scan) {
     .cat-back:focus-visible { outline: 2px solid var(--ass); outline-offset: 2px; }
     .cat-view-name { font-family: var(--font-display); font-size: 1.55rem; text-transform: uppercase; letter-spacing: .03em; margin: 0 0 .5rem; border: none; padding: 0 0 0 .65rem; border-left: 4px solid var(--view-accent, #8b8b95); color: var(--ink); font-weight: 400; }
     .cat-view:has(.cv-state-clean) { --view-accent: #4ade80; }
+    .cat-view:has(.cv-state-measured) { --view-accent: #8b8b95; }
     .cat-view:has(.cv-state-watch) { --view-accent: #facc15; }
     .cat-view:has(.cv-state-needs-attention) { --view-accent: #fb923c; }
     .cat-view:has(.cv-state-priority) { --view-accent: #f87171; }
@@ -1521,6 +1549,7 @@ export function renderHtmlReport(scan) {
     .cv-den { font-size: .85rem; font-weight: 600; color: var(--ink-faint); }
     .cv-state { font-size: .7rem; font-weight: 800; letter-spacing: .06em; padding: .18rem .6rem; border-radius: 999px; color: #0a0a0b; background: #8b8b95; }
     .cv-state-clean { background: #4ade80; }
+    .cv-state-measured { background: #8b8b95; }
     .cv-state-watch { background: #facc15; }
     .cv-state-needs-attention { background: #fb923c; }
     .cv-state-priority { background: #f87171; }
