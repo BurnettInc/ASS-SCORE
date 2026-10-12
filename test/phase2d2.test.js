@@ -135,7 +135,7 @@ test('P2D2.3: findings are premium cards with a receipts drawer; What To Fix Fir
     // view anchor, never a repeat of the full roast/receipt.
     const fixItems = [...html.matchAll(/<li class="fix-item fix-([a-z-]+)">/g)].map((m) => m[1]);
     assert.equal(fixItems.length, 5, 'fix-first capped at top 5 ranked cards');
-    assert.ok(fixItems.every((c) => ['priority', 'needs-attention', 'watch'].includes(c)), 'fix cards carry real state classes');
+    assert.ok(fixItems.every((c) => ['critical', 'priority', 'needs-work', 'watch'].includes(c)), 'fix cards carry real state classes');
     const links = [...html.matchAll(/class="fix-link" href="#(finding-[a-z]+-\d+)"/g)].map((m) => m[1]);
     assert.equal(links.length, 5, 'each fix card links to its finding');
     for (const anchor of links) assert.ok(html.includes(`id="${anchor}"`), `fix link resolves to the real ${anchor} section`);

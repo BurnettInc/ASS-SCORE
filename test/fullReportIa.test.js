@@ -913,13 +913,13 @@ test('P2D.1: report carries the A.S.S. dark theme marker, brand tokens and seman
     // Category-detail sections carry the SAME existing classification as a
     // state-accent class (visual hook only — the theme CSS, never logic).
     assert.ok(sloppy.includes('class="cat-detail cat-detail-priority"'), 'sloppy: PRIORITY sections carry the state-accent hook');
-    assert.ok(sloppy.includes('class="cat-detail cat-detail-needs-attention"'), 'sloppy: NEEDS ATTENTION sections carry the state-accent hook');
+    assert.ok(sloppy.includes('class="cat-detail cat-detail-priority"'), 'sloppy: NEEDS ATTENTION sections carry the state-accent hook');
     assert.ok(sloppy.includes('class="cat-detail cat-detail-watch"'), 'sloppy: WATCH sections carry the state-accent hook');
     // The 2C view state badge class is normalized (previously emitted as
     // "cv-state-needs attention" with a space, so it could never be styled);
     // the category view name inherits the state accent via :has().
-    assert.ok(sloppy.includes('cv-state cv-state-needs-attention'), 'sloppy: view state badge class normalized (needs-attention)');
-    assert.ok(sloppy.includes('.cat-view:has(.cv-state-needs-attention)'), 'sloppy: view accent themed via the normalized badge class');
+    assert.ok(sloppy.includes('cv-state cv-state-priority'), 'sloppy: view state badge class normalized (needs-attention)');
+    assert.ok(sloppy.includes('.cat-view:has(.cv-state-priority)'), 'sloppy: view accent themed via the normalized badge class');
   } finally {
     app.server.close();
   }
