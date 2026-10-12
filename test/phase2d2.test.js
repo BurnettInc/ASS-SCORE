@@ -116,7 +116,7 @@ test('P2D2.2: category cards are scannable — per-category meter fill (sub-scor
   }
 });
 
-test('P2D2.3: findings are premium cards with a receipts drawer; What To Fix First is ranked and links to the underlying finding', async () => {
+test('P2D2.3: findings are premium cards with always-visible receipts; What To Fix First is ranked and its finding anchors stay', async () => {
   const dbPath = tmpDb();
   await insertScan(dbPath, { id: 'p2d2-sloppy', score: 89, breakdown: SLOPPY_BREAKDOWN_89 });
   const app = startApp(dbPath);
@@ -128,17 +128,18 @@ test('P2D2.3: findings are premium cards with a receipts drawer; What To Fix Fir
     const flat = html.slice(html.indexOf('<div class="cat-sources" hidden>'), html.indexOf('<section class="cat-view"', html.indexOf('<div class="cat-sources" hidden>')));
     assert.equal((flat.match(/<div class="finding-card"/g) ?? []).length, 6, 'grouping: one flat-list premium card per negative finding');
     assert.equal((flat.match(/class="rec-count">/g) ?? []).length, 6, 'grouping: every flat-list receipts drawer shows a real evidence-line count');
-    assert.ok(html.includes('class="rec-count">1 line of evidence<'), 'drawer count is the actual line count');
+    assert.ok(html.includes('class="rec-count">1 line of evidence<'), 'receipts count is the actual line count');
     assert.ok(html.includes('class="fc-roast"'), 'roast blocks present');
     // What To Fix First: COMPACT ranked SUMMARY cards (dashboard final cleanup)
-    // — capped at 5, ranked by category severity, each linked to its category
-    // view anchor, never a repeat of the full roast/receipt.
+    // — capped at 5, ranked by category severity, never a repeat of the full
+    // roast/receipt. The per-item deep link is gone (owner 2026-10-12); the
+    // finding-card anchors the links used still exist for the focused-view JS.
     const fixItems = [...html.matchAll(/<li class="fix-item fix-([a-z-]+)">/g)].map((m) => m[1]);
     assert.equal(fixItems.length, 5, 'fix-first capped at top 5 ranked cards');
     assert.ok(fixItems.every((c) => ['critical', 'priority', 'needs-work', 'watch'].includes(c)), 'fix cards carry real state classes');
-    const links = [...html.matchAll(/class="fix-link" href="#(finding-[a-z]+-\d+)"/g)].map((m) => m[1]);
-    assert.equal(links.length, 5, 'each fix card links to its finding');
-    for (const anchor of links) assert.ok(html.includes(`id="${anchor}"`), `fix link resolves to the real ${anchor} section`);
+    assert.ok(!html.includes('class="fix-link"'), 'no fix card renders a deep-link anchor any more');
+    const anchors = [...html.matchAll(/id="(finding-[a-z]+-\d+)"/g)].map((m) => m[1]);
+    assert.ok(anchors.length >= fixItems.length, 'every ranked problem still has its finding-card anchor in the report');
     assert.ok(html.includes('class="fix-action"'), 'fix cards carry the one-line what-to-fix summary');
     // OWNER DEFECT FIX 2026-10-07: every fix card carries a fix-problem
     // headline that names the concrete problem; the full receipt is still

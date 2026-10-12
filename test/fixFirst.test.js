@@ -95,12 +95,12 @@ test('fix-first: each item renders a fix-problem headline naming the finding, tr
     // The fallback rule: the headline must never be the roast when the
     // finding line exists.
     assert.ok(!problem[1].includes('fallback roast'), 'headline uses the finding, not the roast');
-    // The item still links to its real finding — the deep-link machinery
-    // (owner 2026-10-07) points at the finding card INSIDE its category view
-    // (id="finding-<cat>-<n>"), never at the removed flat list; the target id
-    // and the category anchor both exist in the report.
-    assert.ok(fixSection.includes('href="#finding-repetitive-1"'), 'fix item deep-links to its finding card');
-    assert.ok(html.includes('id="finding-repetitive-1"'), 'the deep-link target id exists in the report');
+    // Owner 2026-10-12: fix items no longer render a "See the full finding"
+    // link (the jump read as a round trip back to the top). The finding card
+    // keeps its id="finding-<cat>-<n>" anchor — the focused-view JS scroll
+    // target (owner 2026-10-07) — and the category anchor still exists.
+    assert.ok(!fixSection.includes('class="fix-link"'), 'fix items render no deep-link anchor');
+    assert.ok(html.includes('id="finding-repetitive-1"'), 'the finding-card anchor still exists in the report');
     assert.ok(html.includes('id="cat-repetitive"'), 'the category anchor exists in the report');
   } finally {
     app.server.close();
@@ -186,9 +186,10 @@ test('fix-first: one category with >2 negatives yields ≥3 distinct categories 
     // the category's own finding order is preserved inside the cap.
     assert.ok(labels[0] === 'REPETITION' && labels[1] === 'REPETITION', 'the hot category leads with its top 2 in order');
     assert.deepEqual([...distinct].sort(), ['COPY', 'IMAGERY', 'REPETITION'], 'all three categories present');
-    // Every item still carries the headline + link.
+    // Every item still names its problem; the per-item deep-link anchor is
+    // gone (owner 2026-10-12).
     assert.equal((fixSection.match(/class="fix-problem">/g) ?? []).length, labels.length, 'every item names its problem');
-    assert.equal((fixSection.match(/class="fix-link" href="#/g) ?? []).length, labels.length, 'every item links to its finding');
+    assert.ok(!fixSection.includes('class="fix-link"'), 'no fix item renders a deep-link anchor any more');
   } finally {
     app.server.close();
   }
