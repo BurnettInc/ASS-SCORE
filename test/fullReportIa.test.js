@@ -422,26 +422,36 @@ test('P2A.2: all 7 category cards render as <a> links, each href="#…" targetin
   }
 });
 
-test('P2A.3: card numbers/states come from the existing classification (state classes + unchanged values)', async () => {
+test('P2A.3: card numbers/states come from the existing classification (two-axis band classes + evidence pills + unchanged values)', async () => {
   const dbPath = tmpDb();
   await insertScan(dbPath, { id: 'p2a-states', score: 89, breakdown: SLOPPY_BREAKDOWN_89 });
   const app = startApp(dbPath);
   try {
     const html = await paidHtml(app.base, 'p2a-states');
-    // State colors are driven by categoryClass on the stored sub-scores.
-    assert.ok(html.includes('class="cat-card cat-priority"'), 'high sub-score renders a PRIORITY (red) card');
-    assert.ok(html.includes('class="cat-card cat-attention"'), 'mid sub-score renders a NEEDS ATTENTION (orange) card');
-    assert.ok(html.includes('class="cat-card cat-watch"'), 'low sub-score renders a WATCH (amber) card');
+    // PRIORITY-axis colors are driven by the score bands (Job #2B): 75–100
+    // CRITICAL, 50–74 PRIORITY, 25–49 NEEDS WORK, 0–9 CLEAN, null = skipped.
+    assert.ok(html.includes('class="cat-card cat-critical"'), '88/90/82 sub-scores render CRITICAL (red) cards');
+    assert.ok(html.includes('class="cat-card cat-priority"'), '62 sub-score renders a PRIORITY (amber-red) card');
+    assert.ok(html.includes('class="cat-card cat-needs-work"'), '30 sub-score renders a NEEDS WORK (orange) card');
     assert.ok(html.includes('class="cat-card cat-clean"'), 'zero sub-score renders a CLEAN (green) card');
     assert.ok(html.includes('class="cat-card cat-skipped"'), 'null sub-score renders a neutral (gray) skipped card');
-    // Existing values are shown verbatim: score numbers and state labels.
+    // Existing values are shown verbatim: score numbers and band labels.
     for (const score of ['88', '62', '90', '30', '0', '82']) {
       assert.ok(html.includes(`<span class="cat-score">${score}<span class="cat-den">/100</span></span>`),
         `card shows the existing sub-score ${score}/100`);
     }
-    for (const state of ['PRIORITY', 'NEEDS ATTENTION', 'WATCH', 'CLEAN']) {
-      assert.ok(html.includes(`<span class="cat-state">${state}</span>`), `card shows state ${state}`);
+    // Every band this fixture lands in renders as the PRIORITY pill (the old
+    // NEEDS ATTENTION label is gone; WATCH does not occur in this fixture).
+    for (const state of ['CRITICAL', 'PRIORITY', 'NEEDS WORK', 'CLEAN']) {
+      assert.ok(html.includes(`<span class="cat-state">${state}</span>`), `card shows priority pill ${state}`);
     }
+    // EVIDENCE axis (Job #2B): the same stored classification says what backs
+    // each score — FINDINGS for the five real-roast categories, CLEAN for the
+    // assessed-clean fingerprints category, NOT ENOUGH DATA for the skipped
+    // crossPage module.
+    assert.ok(html.includes('cat-ev cat-ev-findings">FINDINGS</span>'), 'real-roast categories carry the FINDINGS evidence pill');
+    assert.ok(html.includes('cat-ev cat-ev-clean">CLEAN</span>'), 'assessed-clean category carries the CLEAN evidence pill');
+    assert.ok(html.includes('cat-ev cat-ev-nodata">NOT ENOUGH DATA</span>'), 'skipped module carries the NOT ENOUGH DATA evidence pill');
     assert.ok(html.includes('insufficient pages for cross-page analysis'),
       'skipped card surfaces the stored note (REPETITION on a single-page scan)');
   } finally {
@@ -904,22 +914,28 @@ test('P2D.1: report carries the A.S.S. dark theme marker, brand tokens and seman
       // Restrained brand moments (structure only).
       assert.ok(html.includes('class="head-donkey"'), `${name}: masthead donkey motif present`);
       assert.ok(html.includes('0 = LEAST ASS / 100 = MAX ASS'), `${name}: score scale hint (poster language)`);
-      // Band-semantic accents stay wired to the existing per-state classes.
+      // Band-semantic accents stay wired to the existing per-band classes
+      // (Job #2B: clean / watch / needs-work / priority / critical).
       assert.ok(html.includes('--cat: #4ade80') && html.includes('--cat: #facc15')
-        && html.includes('--cat: #fb923c') && html.includes('--cat: #f87171'),
-        `${name}: clean/watch/attention/priority accents defined`);
+        && html.includes('--cat: #fb923c') && html.includes('--cat: #f87171')
+        && html.includes('--cat: #ef4444'),
+        `${name}: clean/watch/needs-work/priority/critical accents defined`);
     }
     const sloppy = await paidHtml(app.base, 'p2d1-sloppy');
-    // Category-detail sections carry the SAME existing classification as a
-    // state-accent class (visual hook only — the theme CSS, never logic).
+    // Category-detail sections carry the same classification as a band-accent
+    // class (visual hook only — the theme CSS, never logic). The sloppy
+    // fixture lands in CRITICAL (88/90/82), PRIORITY (62) and NEEDS WORK (30).
+    assert.ok(sloppy.includes('class="cat-detail cat-detail-critical"'), 'sloppy: CRITICAL sections carry the state-accent hook');
     assert.ok(sloppy.includes('class="cat-detail cat-detail-priority"'), 'sloppy: PRIORITY sections carry the state-accent hook');
-    assert.ok(sloppy.includes('class="cat-detail cat-detail-priority"'), 'sloppy: NEEDS ATTENTION sections carry the state-accent hook');
-    assert.ok(sloppy.includes('class="cat-detail cat-detail-watch"'), 'sloppy: WATCH sections carry the state-accent hook');
+    assert.ok(sloppy.includes('class="cat-detail cat-detail-needs-work"'), 'sloppy: NEEDS WORK sections carry the state-accent hook');
     // The 2C view state badge class is normalized (previously emitted as
     // "cv-state-needs attention" with a space, so it could never be styled);
-    // the category view name inherits the state accent via :has().
-    assert.ok(sloppy.includes('cv-state cv-state-priority'), 'sloppy: view state badge class normalized (needs-attention)');
+    // the category view name inherits the band accent via :has().
+    assert.ok(sloppy.includes('cv-state cv-state-priority'), 'sloppy: view state badge class normalized (needs-work)');
+    assert.ok(sloppy.includes('cv-state cv-state-critical') && sloppy.includes('cv-state cv-state-needs-work'),
+      'sloppy: every band present in the fixture renders a normalized view badge');
     assert.ok(sloppy.includes('.cat-view:has(.cv-state-priority)'), 'sloppy: view accent themed via the normalized badge class');
+    assert.ok(sloppy.includes('.cat-view:has(.cv-state-critical)'), 'sloppy: CRITICAL view accent themed via :has()');
   } finally {
     app.server.close();
   }
