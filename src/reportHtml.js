@@ -62,59 +62,94 @@ function crawlScope(fetched, discovered) {
 }
 
 /**
- * Per-category classification from the sub-score (0-100, higher = worse).
- * Thresholds (judgment, documented): 0-24 CLEAN, 25-49 WATCH, 50-74 NEEDS
- * ATTENTION, 75-100 PRIORITY — the severity ladder the product uses
- * everywhere (clean -> watch -> needs attention -> priority, mirroring the
- * verdict band ramp), so a category's state and the report's overall verdict
- * read consistently. A category with zero findings always reads CLEAN
- * ("Nothing meaningful to roast here.").
+ * Category STATUS model — TWO AXES (Job #2B, owner spec 2026-10-12): the
+ * fused one-pill classification (categoryClass / categoryDisplayState,
+ * incl. the Job #2 MEASURED display state) is SUPERSEDED by a score-band
+ * PRIORITY pill and a SEPARATE EVIDENCE pill. Every surface the owner reads
+ * (breakdown card, focused view, fix-first pills, finding-severity badges,
+ * What's Working gate) derives from the functions below — one shared source.
+ *
+ * AXIS 1 — PRIORITY (score-only bands, owner spec verbatim):
+ *   0–9 CLEAN · 10–24 WATCH · 25–49 NEEDS WORK · 50–74 PRIORITY · 75–100 CRITICAL
+ *   DISPLAY PROMOTION (10-07 invariant, kept): a category with ≥1 ACTUAL
+ *   negative finding must NEVER render CLEAN at either axis — its priority
+ *   pill promotes to WATCH at minimum, regardless of the score band.
+ *   SKIPPED modules (non-numeric / null score) have NO priority band.
+ *
+ * AXIS 2 — EVIDENCE (what actually backs the score, from the classified
+ *   three-layer split — the same negatives/cleans/metrics arrays the report
+ *   sections already compute):
+ *   FINDINGS        — actionable negative findings exist (never CLEAN)
+ *   MEASURED        — metric measurements exist but no actionable negative
+ *                     finding identified (score reflects measurements;
+ *                     the MEASURED_LINE explainer renders next to it)
+ *   NOT ENOUGH DATA — category skipped / insufficient evidence (e.g.
+ *                     crossPage on a single-page scan) — never CLEAN
+ *   CLEAN           — assessed, no meaningful concern detected
+ *
+ * DISPLAY-LAYER ONLY: scoring, weights, thresholds, detectors, VERDICT bands
+ * and stored data are untouched — same input, same report data, new labels.
  */
-function categoryClass(score, findingsCount) {
-  if (!Number.isFinite(Number(score)) || score === null || findingsCount === 0) return 'CLEAN';
-  const s = Number(score);
-  if (s >= 75) return 'PRIORITY';
-  if (s >= 50) return 'NEEDS ATTENTION';
-  if (s >= 25) return 'WATCH';
-  return 'CLEAN';
+const PRIORITY_BANDS = [
+  [0, 9, 'CLEAN'],
+  [10, 24, 'WATCH'],
+  [25, 49, 'NEEDS WORK'],
+  [50, 74, 'PRIORITY'],
+  [75, 100, 'CRITICAL'],
+];
+
+/** CSS-safe class tail for a status label ('NEEDS WORK' -> 'needs-work'). */
+export function statusClass(label) {
+  return String(label ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
 }
 
 /**
- * DISPLAY-state classification for a category — the report-contradiction
- * invariant (owner defect 2026-10-07: "6 roasts — see receipts" next to
- * "Nothing meaningful to roast here" on one card; "IMAGERY — CLEAN:" zero
- * lines next to "5 of 53 placeholder filenames"): a category with ≥1 ACTUAL
- * NEGATIVE finding must NEVER render as CLEAN anywhere in the report,
- * regardless of its sub-score band. A CLEAN-band category that also has
- * negative findings promotes to WATCH on every display surface (the card, the
- * What's Working gate, the finding-severity badges, the fix-first pills, the
- * focused-view state line); every other input is byte-identical to
- * categoryClass. DISPLAY-ONLY: categoryClass itself is untouched — its band
- * math stays deterministic for the non-display uses (methods, verdict copy).
+ * Axis 1 — the score-band priority label for a category sub-score (0-100,
+ * higher = worse). Returns null for a skipped module (non-numeric / null
+ * score). The 10-07 promotion: negative findings force a CLEAN band up to
+ * WATCH so a real roast is never labeled CLEAN at the priority axis either.
  *
- * @param {number} score category sub-score (0-100, higher = worse)
- * @param {number} findingsCount stored findings-array length
- * @param {number} negativesCount count of ACTUAL negative findings (post
- *   classifyFinding split + boilerplate aggregate demotion → the same
- *   `negatives.length` the report's other sections count)
- * @returns {'CLEAN'|'WATCH'|'NEEDS ATTENTION'|'PRIORITY'|'MEASURED'} the
- *   DISPLAY state
+ * @param {number|null} score category sub-score
+ * @param {number} [negativesCount] count of actual negative findings
+ * @returns {'CLEAN'|'WATCH'|'NEEDS WORK'|'PRIORITY'|'CRITICAL'|null}
  */
-function categoryDisplayState(score, findingsCount, negativesCount, metricsCount = 0) {
-  const cls = categoryClass(score, findingsCount);
-  if (cls === 'CLEAN' && Number(negativesCount) > 0) return 'WATCH';
-  // Job #2 (owner defect 2026-10-12): a category whose score comes only from
-  // NEUTRAL metric measurements — zero actual negative findings — must never
-  // wear a severity pill (WATCH / NEEDS ATTENTION / PRIORITY) next to its
-  // "Measurements only" line: that is the same class of contradiction as the
-  // 10-07 CLEAN fix. The stored findings array contains metric rows as well
-  // as negatives, so the band math alone cannot tell them apart; the metrics
-  // count (already computed at the card/focused-view call sites) can.
-  // MEASURED applies ONLY when the band would otherwise be a severity state —
-  // a CLEAN-band category's result is untouched, and a category with ≥1
-  // negative finding keeps its severity logic exactly as before.
-  if (Number(negativesCount) === 0 && Number(metricsCount) > 0 && cls !== 'CLEAN') return 'MEASURED';
-  return cls;
+export function categoryPriority(score, negativesCount = 0) {
+  const s = Number(score);
+  if (score === null || score === undefined || !Number.isFinite(s)) return null;
+  for (const [lo, hi, label] of PRIORITY_BANDS) {
+    if (s >= lo && s <= hi) {
+      return (label === 'CLEAN' && Number(negativesCount) > 0) ? 'WATCH' : label;
+    }
+  }
+  return null;
+}
+
+/**
+ * Axis 2 — the EVIDENCE status for a category: what backs the score. The
+ * classified split drives it: negatives > 0 -> FINDINGS (wins over metrics);
+ * metrics > 0 and no negatives -> MEASURED (the infoDensity measurement-only
+ * case — the ORIGINALITY 32 ledger-story case); a skipped module (null /
+ * non-numeric score) -> NOT ENOUGH DATA, never CLEAN; otherwise CLEAN.
+ *
+ * @param {number|null} score category sub-score
+ * @param {number} [negativesCount] count of actual negative findings
+ * @param {number} [metricsCount] count of neutral metric-measurement lines
+ * @returns {'FINDINGS'|'MEASURED'|'NOT ENOUGH DATA'|'CLEAN'}
+ */
+export function categoryEvidence(score, negativesCount = 0, metricsCount = 0) {
+  const s = Number(score);
+  if (score === null || score === undefined || !Number.isFinite(s)) return 'NOT ENOUGH DATA';
+  if (Number(negativesCount) > 0) return 'FINDINGS';
+  if (Number(metricsCount) > 0) return 'MEASURED';
+  return 'CLEAN';
+}
+
+/** Both axes from one call — the single source every display surface uses. */
+export function categoryStatus(score, negativesCount = 0, metricsCount = 0) {
+  return {
+    priority: categoryPriority(score, negativesCount),
+    evidence: categoryEvidence(score, negativesCount, metricsCount),
+  };
 }
 
 /**
@@ -248,10 +283,10 @@ function renderFinding(scanId, categoryKey, categoryLabel, finding, insight, ind
   // card with four labeled zones: THE ROAST / WHY IT MATTERS / HOW TO FIX IT /
   // RECEIPTS. The label TEXT stays exactly as Phase 1 emitted it (so every
   // existing assertion still matches); the display case is applied via CSS
-  // text-transform. The severity badge comes from the SAME existing category
-  // display classification (categoryDisplayState on the stored sub-score) —
-  // never invented; CLEAN is never badgeable (a category with negative
-  // findings promotes to WATCH at minimum).
+  // text-transform. The severity badge comes from the SAME status source as
+  // the cards — categoryPriority on the stored sub-score (Job #2B) — never
+  // invented; CLEAN is never badgeable (a category with negative findings
+  // promotes to WATCH at minimum).
   const stateBadge = state && state !== 'CLEAN'
     ? `<span class="fc-state fc-state-${String(state).toLowerCase().replace(/[^a-z0-9]+/g, '-')}">${esc(state)}</span>`
     : '';
@@ -298,22 +333,21 @@ function renderFinding(scanId, categoryKey, categoryLabel, finding, insight, ind
 }
 
 /**
- * Is a category a legitimate WHAT'S WORKING compliment source? The exact same
- * inputs as the breakdown card DISPLAY classification (categoryDisplayState on
- * the stored sub-score + stored findings count + actual-negative count), used
- * to gate compliments: WHAT'S WORKING only ever compliments truly CLEAN
- * categories (audit Q2, owner-approved 2026-09-28) — a WATCH/45 category with
- * an in-band measurement line must never be advertised as "CLEAN" in the same
- * report that flags it, and (owner defect 2026-10-07) a CLEAN-band category
- * with ≥1 negative finding must never have its zero-sibling clean lines
- * surface as "— CLEAN:" compliments next to the roasts that flag it. Skipped
- * (null score) categories are never CLEAN-band compliment sources.
+ * Is a category a legitimate WHAT'S WORKING compliment source? Job #2B
+ * two-axis gate: the category must be genuinely clean on BOTH axes — priority
+ * CLEAN (score band 0-9, un-promoted) AND evidence CLEAN (assessed with zero
+ * negative findings and zero out-of-band metric measurements). This keeps the
+ * audit Q2 rule (a WATCH-band category's measurements are never advertised as
+ * "CLEAN" in the same report that flags it) and the 10-07 rule (a CLEAN-band
+ * category with ≥1 negative finding never surfaces "— CLEAN:" compliments
+ * next to the roasts that flag it), and adds the Job #2B rules: a MEASURED
+ * category (metrics, no negatives) and a NOT ENOUGH DATA category (skipped
+ * module — null score) are never compliment sources either.
  */
-function isCleanBand(key, rule, negativesCount) {
+function isCleanBand(key, rule, negativesCount, metricsCount) {
   if (!(Number.isFinite(Number(rule?.score)) && rule.score !== null)) return false;
-  const sub = publicScore(rule.score);
-  const nFindings = Array.isArray(rule.findings) ? rule.findings.length : 0;
-  return categoryDisplayState(sub, nFindings, negativesCount) === 'CLEAN';
+  const st = categoryStatus(publicScore(rule.score), negativesCount, metricsCount);
+  return st.priority === 'CLEAN' && st.evidence === 'CLEAN';
 }
 
 /**
@@ -741,7 +775,7 @@ export function renderHtmlReport(scan) {
   // DESIGN now compliments too: the fingerprints rule emits a clean line on a
   // zero-hit scan, so its (previously unreachable) compliments pool fires. ---
   const cleanLis = classified
-    .filter((g) => isCleanBand(g.key, g.rule, g.negativeCount))
+    .filter((g) => isCleanBand(g.key, g.rule, g.negativeCount, g.metrics.length))
     .flatMap((g) => g.cleans.map((item) => renderCleanItem(CATEGORY_LABELS[g.key] ?? g.key, item)))
     .join('');
   const workingSection = `
@@ -758,10 +792,11 @@ export function renderHtmlReport(scan) {
   // matching #view-cat-<key> section. The dashboard's own id="cat-<key>"
   // sections stay in place (Phase 2A anchor contract + the no-JS degraded path
   // still scroll to them). The number + state come from the SAME existing
-  // classification as the old list (categoryDisplayState on the stored
-  // sub-score + negative count, i.e. categoryClass with the CLEAN->WATCH
-  // promotion for flagged categories; stored note for skipped modules) — no
-  // recalculation, no reinterpretation of the category's own data.
+  // classification: the score-band priority + evidence (categoryStatus on
+  // the stored sub-score + negative count + metrics count — Job #2B; the
+  // CLEAN->WATCH promotion for flagged categories is built into
+  // categoryPriority; skipped modules render the note + NOT ENOUGH DATA) —
+  // no recalculation, no reinterpretation of the category's own data.
   // State colors are applied by class only (green/amber/red/gray), driven by
   // that classification, never by changing data.
   const breakdownCards = Object.entries(scan.breakdown ?? {}).map(([key, rule]) => {
@@ -769,32 +804,37 @@ export function renderHtmlReport(scan) {
     const anchor = `cat-${key.toLowerCase()}`;
     if (!(Number.isFinite(Number(rule?.score)) && rule.score !== null)) {
       // Skipped module (score null, e.g. crossPage on a single-page scan):
-      // surface its note instead of a score.
+      // surface its note instead of a score, and NEVER a CLEAN at either
+      // axis — the evidence pill honestly reads NOT ENOUGH DATA (owner Job
+      // #2B rule 6).
       const note = rule?.note ? esc(rule.note) : 'skipped';
       return `\n  <a class="cat-card cat-skipped" href="#${anchor}">
     <span class="cat-top">
       <span class="cat-name">${esc(label)}</span>
       <span class="cat-go">details →</span>
     </span>
+    <span class="cat-mid"><span class="cat-ev cat-ev-nodata">NOT ENOUGH DATA</span></span>
     <span class="cat-line">${note}</span>
   </a>`;
     }
     const sub = publicScore(rule.score);
-    const nFindings = Array.isArray(rule.findings) ? rule.findings.length : 0;
     // Findings-or-not line: counts NEGATIVE findings only (the report-wide
     // convention — compliments and metric measurements are never "findings").
     const grp = classified.find((x) => x.key === key);
     const negs = grp ? grp.groups.length : 0;
     const metr = grp ? grp.metrics.length : 0;
-    // DISPLAY state (owner defect 2026-10-07): a CLEAN-band category with
-    // actual negative findings promotes to WATCH — "Nothing meaningful to
-    // roast here." must never render next to "N roasts — see receipts".
-    const cls = categoryDisplayState(sub, nFindings, negs, metr);
-    const stateClass = cls === 'NEEDS ATTENTION' ? 'cat-attention' : `cat-${cls.toLowerCase()}`;
-    // METRICS-ONLY (Job #2): the neutral MEASURED pill gets the neutral
-    // explanation, never the severity-flavored category one-liner.
-    const line = cls === 'CLEAN' ? 'Nothing meaningful to roast here.'
-      : (cls === 'MEASURED' ? MEASURED_LINE : (CATEGORY_ONE_LINERS[key] ?? ''));
+    // TWO-AXIS status (Job #2B): the priority pill is the score band
+    // (promoted WATCH at minimum when real roasts exist — 10-07 invariant);
+    // the evidence pill is what backs the score (FINDINGS / MEASURED /
+    // CLEAN). The card accent follows the priority band.
+    const st = categoryStatus(sub, negs, metr);
+    const stateClass = `cat-${statusClass(st.priority)}`;
+    // The one-liner follows the EVIDENCE axis: FINDINGS keep the category's
+    // severity-flavored line; MEASURED gets the neutral explainer (Job #2
+    // line, kept verbatim); a clean assessment gets the nothing-to-roast
+    // sentence.
+    const line = st.evidence === 'MEASURED' ? MEASURED_LINE
+      : (st.evidence === 'CLEAN' ? 'Nothing meaningful to roast here.' : (CATEGORY_ONE_LINERS[key] ?? ''));
     const findingsLine = negs > 0
       ? `<span class="cat-findings cat-findings-problem">${negs} roast${negs === 1 ? '' : 's'} — see receipts</span>`
       : (metr > 0 ? '<span class="cat-findings">Measurements only</span>' : '<span class="cat-findings cat-findings-clean">No roasts</span>');
@@ -805,7 +845,10 @@ export function renderHtmlReport(scan) {
     </span>
     <span class="cat-mid">
       <span class="cat-score">${sub}<span class="cat-den">/100</span></span>
-      <span class="cat-state">${cls}</span>
+      <span class="cat-pills">
+        <span class="cat-state">${st.priority}</span>
+        <span class="cat-ev cat-ev-${statusClass(st.evidence)}">${st.evidence}</span>
+      </span>
     </span>
     <span class="cat-meter" aria-hidden="true">
       <span class="cat-meter-fill" style="width:${sub}%"> </span>
@@ -816,7 +859,7 @@ export function renderHtmlReport(scan) {
   }).join('');
   const breakdownSection = `
   <h2>Your Breakdown</h2>
-  <p class="hint">Tap a category to open its focused view — the details are one click away.</p>
+  <p class="hint">Each card shows the score band and the evidence behind it — findings, measurements, or not enough data. Tap a category to open its focused view.</p>
   <div class="cat-grid">
   ${breakdownCards}
   </div>`;
@@ -848,13 +891,13 @@ export function renderHtmlReport(scan) {
   const catState = new Map(classified.map((g) => [g.key, (() => {
     const fgScore = g.rule?.score;
     const fgSub = (Number.isFinite(Number(fgScore)) && fgScore !== null) ? publicScore(fgScore) : null;
-    const fgCount = Array.isArray(g.rule?.findings) ? g.rule.findings.length : 0;
-    // Phase 2B: severity badges come from the SAME existing category
-    // classification (categoryDisplayState on the stored sub-score + finding
-    // count + grouped negative count) — never a new/reinterpreted severity.
-    // CLEAN is never badgeable here: a category with negative findings is
-    // never CLEAN (and a CLEAN-band one promotes to WATCH).
-    const state = (g.negativeCount > 0 && fgSub !== null) ? categoryDisplayState(fgSub, fgCount, g.negativeCount) : null;
+    // Phase 2B: finding-severity badges come from the SAME status source as
+    // the cards — categoryPriority on the stored sub-score + grouped negative
+    // count (Job #2B) — never a new/reinterpreted severity. CLEAN is never
+    // badgeable here: a category with negative findings is never CLEAN (and a
+    // CLEAN-band one promotes to WATCH); sections without negative findings
+    // carry no badge at all (null).
+    const state = (g.negativeCount > 0 && fgSub !== null) ? categoryPriority(fgSub, g.negativeCount) : null;
     return { state, sub: fgSub };
   })()]));
   /** Receipt lines for a grouped card: labeled with the member's category when
@@ -890,7 +933,10 @@ export function renderHtmlReport(scan) {
     // classification as the cards; never a data change. `cat-detail-empty`
     // stays intact in its own className for the 2C clone check.
     const st = catState.get(g.key);
-    const fgAccent = (!st || st.state === null) ? 'neutral' : (st.state === 'NEEDS ATTENTION' ? 'needs-attention' : st.state.toLowerCase());
+    // Job #2B: the section accent follows the (promoted) PRIORITY band —
+    // statusClass('NEEDS WORK') -> 'needs-work'. Sections with no negative
+    // findings (metrics-only / clean) keep the neutral accent.
+    const fgAccent = (!st || st.state === null) ? 'neutral' : statusClass(st.state);
     const items = g.groups.map((grp, i) => {
       const label = CATEGORY_LABELS[g.key] ?? g.key;
       // Per-category ordinals inside the focused drill-down (the flat list
@@ -968,11 +1014,12 @@ export function renderHtmlReport(scan) {
     if (!g) continue;
     const label = CATEGORY_LABELS[fg.key] ?? fg.key;
     const sub = (Number.isFinite(Number(g.rule?.score)) && g.rule?.score !== null) ? publicScore(g.rule.score) : 0;
-    const nFindings = Array.isArray(g.rule?.findings) ? g.rule.findings.length : 0;
-    // DISPLAY state: a CLEAN-band category with negative findings promotes to
-    // WATCH so its fix pill never reads "CLEAN" next to a fix task (owner
-    // defect 2026-10-07 — same promoted state as the card + badges).
-    const cls = categoryDisplayState(sub, nFindings, g.negativeCount);
+    // Job #2B: fix pills show the same PRIORITY band as the card, promoted
+    // WATCH at minimum (a real roast never reads CLEAN next to a fix task —
+    // owner defect 2026-10-07, same promoted state as the card + badges).
+    // Evidence is implied FINDINGS here: fix-first only ever lists actual
+    // negative findings.
+    const cls = categoryPriority(sub, g.negativeCount) ?? 'WATCH';
     const ins = insightFor(scan.id, fg.key, fg.primary.finding, fg.primary.insight, fg.primary.idx);
     fixItems.push({
       key: fg.key,
@@ -1051,7 +1098,7 @@ export function renderHtmlReport(scan) {
       const deep = withinIdx >= 0
         ? `finding-${it.key.toLowerCase()}-${withinIdx + 1}`
         : `cat-${it.key.toLowerCase()}`;
-      return `\n  <li class="fix-item fix-${it.cls.toLowerCase().replace(/[^a-z0-9]+/g, '-')}">
+      return `\n  <li class="fix-item fix-${statusClass(it.cls)}">
     <div class="fix-top">
       <span class="fix-cat">${esc(it.label)}</span>
       <span class="fix-pill">${esc(it.cls)}</span>
@@ -1119,8 +1166,8 @@ export function renderHtmlReport(scan) {
   // Phase 2A anchors (id="cat-<key>") and Phase 2B card counts are untouched,
   // and the dashboard remains fully present for no-JS/print/SEO. The state and
   // one-liner lines reuse the SAME existing classification data as the cards
-  // (categoryDisplayState on the stored sub-score + negative count;
-  // CATEGORY_ONE_LINERS) — no reinterpretation. Clean categories show their clean items; a category with
+  // (categoryStatus on the stored sub-score + negative count + metrics
+  // count — Job #2B; CATEGORY_ONE_LINERS) — no reinterpretation. Clean categories show their clean items; a category with
   // measurements but no negative finding keeps those measurements as neutral
   // evidence (never a warning) via the cloned section.
   const categoryViews = Object.entries(scan.breakdown ?? {}).map(([key, rule]) => {
@@ -1129,25 +1176,28 @@ export function renderHtmlReport(scan) {
     const g = classified.find((x) => x.key === key);
     let stateLine;
     if (!(Number.isFinite(Number(rule?.score)) && rule.score !== null)) {
-      stateLine = `\n    <span class="cv-none">${rule?.note ? esc(rule.note) : 'skipped'}</span>`;
+      // Skipped module (score null, e.g. crossPage on a single-page scan):
+      // note + a NOT ENOUGH DATA evidence pill — never CLEAN at either axis.
+      stateLine = `\n    <span class="cv-none">${rule?.note ? esc(rule.note) : 'skipped'}</span>\n    <span class="cv-ev cv-ev-nodata">NOT ENOUGH DATA</span>`;
     } else {
       const sub = publicScore(rule.score);
-      const nFindings = Array.isArray(rule.findings) ? rule.findings.length : 0;
-      // DISPLAY state: same promotion as the card — a CLEAN-band category with
-      // negative findings must not show a CLEAN pill in its focused view.
-      const cls = categoryDisplayState(sub, nFindings, g?.groups.length ?? 0, g?.metrics.length ?? 0);
-      // METRICS-ONLY (Job #2): same neutral state + explanation as the card —
-      // the owner reads both surfaces.
-      const viewLine = cls === 'MEASURED' ? MEASURED_LINE : (CATEGORY_ONE_LINERS[key] ?? '');
-      stateLine = `\n    <span class="cv-score">${sub}<span class="cv-den">/100</span></span>\n    <span class="cv-state cv-state-${cls.toLowerCase().replace(/[^a-z0-9]+/g, '-')}">${esc(cls)}</span>\n    <span class="cv-line">${esc(viewLine)}</span>`;
+      // TWO-AXIS status (Job #2B): the same categoryStatus as the card — the
+      // owner reads both surfaces, and they must always agree.
+      const st = categoryStatus(sub, g?.groups.length ?? 0, g?.metrics.length ?? 0);
+      // MEASURED gets the neutral explainer (Job #2 line, kept verbatim);
+      // a clean assessment gets the nothing-to-roast sentence; FINDINGS keep
+      // the category one-liner.
+      const viewLine = st.evidence === 'MEASURED' ? MEASURED_LINE
+        : (st.evidence === 'CLEAN' ? 'Nothing meaningful to roast here.' : (CATEGORY_ONE_LINERS[key] ?? ''));
+      stateLine = `\n    <span class="cv-score">${sub}<span class="cv-den">/100</span></span>\n    <span class="cv-state cv-state-${statusClass(st.priority)}">${esc(st.priority)}</span>\n    <span class="cv-ev cv-ev-${statusClass(st.evidence)}">${esc(st.evidence)}</span>\n    <span class="cv-line">${esc(viewLine)}</span>`;
     }
     // Compliment gate (audit Q2, owner-approved 2026-09-28): a category's
     // clean measurements render in its focused view ONLY when the category is
     // CLEAN-band — a WATCH/45 category must not show a "— CLEAN:" compliment
     // next to its WATCH badge (same rule as the What's Working list; a
     // CLEAN-band category with negative findings is likewise excluded via
-    // categoryDisplayState, owner defect 2026-10-07).
-    const cleanLis = (g && g.cleans.length > 0 && isCleanBand(key, rule, g?.groups.length ?? 0))
+    // categoryStatus, owner defect 2026-10-07).
+    const cleanLis = (g && g.cleans.length > 0 && isCleanBand(key, rule, g?.groups.length ?? 0, g?.metrics.length ?? 0))
       ? `\n    <ul class="cv-clean">\n      ${g.cleans.map((item) => renderCleanItem(label, item)).join('')}\n    </ul>`
       : '';
     return `
@@ -1399,10 +1449,10 @@ export function renderHtmlReport(scan) {
     .cat-card:focus-visible { outline: 2px solid var(--cat, #8b8b95); outline-offset: 2px; }
     .cat-clean { --cat: #4ade80; }
     .cat-watch { --cat: #facc15; }
-    .cat-attention { --cat: #fb923c; }
+    .cat-needs-work { --cat: #fb923c; }
     .cat-priority { --cat: #f87171; }
+    .cat-critical { --cat: #ef4444; }
     .cat-skipped { --cat: #8b8b95; }
-    .cat-measured { --cat: #8b8b95; }
     .cat-top { display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; }
     .cat-name { font-weight: 800; font-size: .95rem; letter-spacing: .03em; color: var(--ink); }
     .cat-go { color: var(--cat, #8b8b95); font-size: .69rem; font-weight: 800; text-transform: uppercase; letter-spacing: .09em; }
@@ -1411,6 +1461,12 @@ export function renderHtmlReport(scan) {
     .cat-score { font-family: var(--font-display); font-weight: 400; font-size: 1.75rem; letter-spacing: .01em; color: var(--cat, var(--ink)); }
     .cat-den { font-size: .78rem; font-weight: 600; color: var(--ink-faint); }
     .cat-state { font-size: .66rem; font-weight: 800; letter-spacing: .07em; padding: .2rem .6rem; border-radius: 999px; color: #0a0a0b; background: var(--cat, #8b8b95); }
+    .cat-pills { display: flex; align-items: baseline; gap: .35rem; }
+    .cat-ev { font-size: .64rem; font-weight: 800; letter-spacing: .07em; padding: .17rem .55rem; border-radius: 999px; background: transparent; border: 1px solid; text-align: center; }
+    .cat-ev-findings { color: #f87171; border-color: #f87171; }
+    .cat-ev-measured { color: #a1a1aa; border-color: #a1a1aa; }
+    .cat-ev-nodata { color: #8b8b95; border-color: #8b8b95; }
+    .cat-ev-clean { color: #4ade80; border-color: #4ade80; }
     .cat-meter { display: block; height: 5px; border-radius: 999px; background: rgba(255,255,255,.08); margin: .6rem 0 .15rem; overflow: hidden; }
     .cat-meter-fill { display: block; height: 100%; border-radius: 999px; background: var(--cat, #8b8b95); transition: width .25s ease; }
     .cat-findings { display: block; font-size: .68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); margin-top: .35rem; }
@@ -1427,8 +1483,9 @@ export function renderHtmlReport(scan) {
     .cat-anchor { display: block; height: 0; }
     .cat-detail-empty { background: rgba(255,255,255,.015); border-style: dashed; }
     .cat-detail-watch { border-left: 3px solid #facc15; }
-    .cat-detail-needs-attention { border-left: 3px solid #fb923c; }
+    .cat-detail-needs-work { border-left: 3px solid #fb923c; }
     .cat-detail-priority { border-left: 3px solid #f87171; }
+    .cat-detail-critical { border-left: 3px solid #ef4444; }
     .cat-detail-neutral { border-left: 3px solid #8b8b95; }
     .cat-empty { color: var(--ink-faint); font-size: .9rem; margin: .4rem 0 .5rem; font-style: italic; }
     /* --- Phase 2B finding cards: premium paid-audit cards, one per negative
@@ -1438,15 +1495,17 @@ export function renderHtmlReport(scan) {
     .finding-card { border: 1px solid var(--line); border-left: 4px solid var(--fc, #f87171); border-radius: 16px; padding: 1.15rem 1.25rem 1.05rem; margin: 1.15rem 0; background: var(--surface); overflow-wrap: break-word; word-break: break-word; }
     .finding-card + .finding-card { margin-top: 1.5rem; }
     .cat-detail-watch .finding-card { --fc: #facc15; }
-    .cat-detail-needs-attention .finding-card { --fc: #fb923c; }
+    .cat-detail-needs-work .finding-card { --fc: #fb923c; }
     .cat-detail-priority .finding-card { --fc: #f87171; }
+    .cat-detail-critical .finding-card { --fc: #ef4444; }
     .fc-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .9rem; padding-bottom: .75rem; border-bottom: 1px dashed var(--line); }
     .fc-count { font-size: .7rem; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-faint); }
     .fc-cat { font-size: .7rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-dim); background: rgba(255,255,255,.06); border: 1px solid var(--line); padding: .16rem .6rem; border-radius: 999px; }
     .fc-state { font-size: .64rem; font-weight: 800; letter-spacing: .07em; padding: .16rem .55rem; border-radius: 999px; color: #0a0a0b; background: #8b8b95; }
     .fc-state-watch { background: #facc15; }
-    .fc-state-needs-attention { background: #fb923c; }
+    .fc-state-needs-work { background: #fb923c; }
     .fc-state-priority { background: #f87171; }
+    .fc-state-critical { background: #ef4444; }
     .fc-body { display: flex; flex-direction: column; gap: 1rem; }
     .fc-roast { max-width: 78ch; }
     .fc-label { display: block; font-size: .66rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: .45rem; }
@@ -1499,8 +1558,9 @@ export function renderHtmlReport(scan) {
     .fix-item { position: relative; margin: .8rem 0; padding: 1rem 1.05rem .9rem 3.5rem; background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--fix, #f87171); border-radius: 14px; overflow-wrap: anywhere; }
     .fix-item::before { counter-increment: fix; content: counter(fix); position: absolute; left: 1.1rem; top: .95rem; font-family: var(--font-display); font-size: 1.8rem; line-height: 1; color: var(--fix, #f87171); font-weight: 400; }
     .fix-watch { --fix: #facc15; }
-    .fix-needs-attention { --fix: #fb923c; }
+    .fix-needs-work { --fix: #fb923c; }
     .fix-priority { --fix: #f87171; }
+    .fix-critical { --fix: #ef4444; }
     .fix-top { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .45rem; }
     .fix-cat { font-size: .7rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-dim); background: rgba(255,255,255,.06); border: 1px solid var(--line); padding: .18rem .6rem; border-radius: 999px; }
     .fix-pill { font-size: .64rem; font-weight: 800; letter-spacing: .07em; padding: .18rem .55rem; border-radius: 999px; color: #0a0a0b; background: var(--fix, #f87171); }
@@ -1539,20 +1599,25 @@ export function renderHtmlReport(scan) {
     .cat-back:focus-visible { outline: 2px solid var(--ass); outline-offset: 2px; }
     .cat-view-name { font-family: var(--font-display); font-size: 1.55rem; text-transform: uppercase; letter-spacing: .03em; margin: 0 0 .5rem; border: none; padding: 0 0 0 .65rem; border-left: 4px solid var(--view-accent, #8b8b95); color: var(--ink); font-weight: 400; }
     .cat-view:has(.cv-state-clean) { --view-accent: #4ade80; }
-    .cat-view:has(.cv-state-measured) { --view-accent: #8b8b95; }
     .cat-view:has(.cv-state-watch) { --view-accent: #facc15; }
-    .cat-view:has(.cv-state-needs-attention) { --view-accent: #fb923c; }
+    .cat-view:has(.cv-state-needs-work) { --view-accent: #fb923c; }
     .cat-view:has(.cv-state-priority) { --view-accent: #f87171; }
+    .cat-view:has(.cv-state-critical) { --view-accent: #ef4444; }
     .cat-view-state { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; margin: .1rem 0 1.1rem; }
     .cv-none { color: var(--ink-faint); font-size: .92rem; }
     .cv-score { font-family: var(--font-display); font-weight: 400; font-size: 1.5rem; letter-spacing: .01em; color: var(--ink); }
     .cv-den { font-size: .85rem; font-weight: 600; color: var(--ink-faint); }
     .cv-state { font-size: .7rem; font-weight: 800; letter-spacing: .06em; padding: .18rem .6rem; border-radius: 999px; color: #0a0a0b; background: #8b8b95; }
     .cv-state-clean { background: #4ade80; }
-    .cv-state-measured { background: #8b8b95; }
     .cv-state-watch { background: #facc15; }
-    .cv-state-needs-attention { background: #fb923c; }
+    .cv-state-needs-work { background: #fb923c; }
     .cv-state-priority { background: #f87171; }
+    .cv-state-critical { background: #ef4444; }
+    .cv-ev { font-size: .68rem; font-weight: 800; letter-spacing: .06em; padding: .17rem .55rem; border-radius: 999px; background: transparent; border: 1px solid; }
+    .cv-ev-findings { color: #f87171; border-color: #f87171; }
+    .cv-ev-measured { color: #a1a1aa; border-color: #a1a1aa; }
+    .cv-ev-nodata { color: #8b8b95; border-color: #8b8b95; }
+    .cv-ev-clean { color: #4ade80; border-color: #4ade80; }
     .cv-line { color: var(--ink-dim); font-size: .92rem; }
     .cv-clean { list-style: none; padding: 0; margin: .3rem 0 1.1rem; }
     .cv-clean li { border-left: 3px solid #4ade80; background: rgba(74,222,128,.05); border-radius: 0 10px 10px 0; padding: .45rem .85rem; margin: .5rem 0; }
