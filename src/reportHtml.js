@@ -82,7 +82,7 @@ function crawlScope(fetched, discovered) {
  *   FINDINGS        — actionable negative findings exist (never CLEAN)
  *   MEASURED        — metric measurements exist but no actionable negative
  *                     finding identified (score reflects measurements;
- *                     the MEASURED_LINE explainer renders next to it)
+ *                     the band-aware MEASURED explainer renders next to it)
  *   NOT ENOUGH DATA — category skipped / insufficient evidence (e.g.
  *                     crossPage on a single-page scan) — never CLEAN
  *   CLEAN           — assessed, no meaningful concern detected
@@ -153,12 +153,21 @@ export function categoryStatus(score, negativesCount = 0, metricsCount = 0) {
 }
 
 /**
- * Neutral one-liner for a METRICS-ONLY category card / focused view (Job #2):
- * the score reflects the neutral measurements, not roastable findings — so the
- * gray MEASURED pill never sits next to a severity-flavored explanation. Same
- * line on both surfaces the owner reads (breakdown card + focused view).
+ * One-liner for a METRICS-ONLY category card / focused view (Job #2 + owner
+ * follow-up): the gray MEASURED pill never sits next to a severity-flavored
+ * explanation, and the copy now follows the PRIORITY band — a CLEAN band
+ * (score 0–9, metrics only) genuinely found nothing to roast; at NEEDS WORK
+ * or worse (score 10+) the score itself IS the concern, so the line owns it
+ * instead of dismissing it (owner: "why no roastable findings at 32?").
+ * Metrics are never relabeled as findings — the pill stays MEASURED and the
+ * band already says the truth. Same line on both surfaces the owner reads
+ * (breakdown card + focused view).
  */
-const MEASURED_LINE = 'Score reflects measurements — no roastable findings.';
+function measuredLine(priority) {
+  return priority === 'CLEAN'
+    ? 'Measurements found nothing to roast here.'
+    : 'Score comes from generic-content measurements — no single line crossed the threshold to quote.';
+}
 
 // Word-boundary truncation lives in src/truncate.js (report-trust fix
 // 2026-10-07) so the rules modules share ONE implementation; reportHtml
@@ -831,10 +840,10 @@ export function renderHtmlReport(scan) {
     const st = categoryStatus(sub, negs, metr);
     const stateClass = `cat-${statusClass(st.priority)}`;
     // The one-liner follows the EVIDENCE axis: FINDINGS keep the category's
-    // severity-flavored line; MEASURED gets the neutral explainer (Job #2
-    // line, kept verbatim); a clean assessment gets the nothing-to-roast
-    // sentence.
-    const line = st.evidence === 'MEASURED' ? MEASURED_LINE
+    // severity-flavored line; MEASURED gets the band-aware explainer (score
+    // 0-9: nothing-found flavor, 10+: owns the concern); a clean assessment
+    // gets the nothing-to-roast sentence.
+    const line = st.evidence === 'MEASURED' ? measuredLine(st.priority)
       : (st.evidence === 'CLEAN' ? 'Nothing meaningful to roast here.' : (CATEGORY_ONE_LINERS[key] ?? ''));
     const findingsLine = negs > 0
       ? `<span class="cat-findings cat-findings-problem">${negs} roast${negs === 1 ? '' : 's'} — see receipts</span>`
@@ -1175,10 +1184,10 @@ export function renderHtmlReport(scan) {
       // TWO-AXIS status (Job #2B): the same categoryStatus as the card — the
       // owner reads both surfaces, and they must always agree.
       const st = categoryStatus(sub, g?.groups.length ?? 0, g?.metrics.length ?? 0);
-      // MEASURED gets the neutral explainer (Job #2 line, kept verbatim);
+      // MEASURED gets the band-aware explainer (same helper as the card);
       // a clean assessment gets the nothing-to-roast sentence; FINDINGS keep
       // the category one-liner.
-      const viewLine = st.evidence === 'MEASURED' ? MEASURED_LINE
+      const viewLine = st.evidence === 'MEASURED' ? measuredLine(st.priority)
         : (st.evidence === 'CLEAN' ? 'Nothing meaningful to roast here.' : (CATEGORY_ONE_LINERS[key] ?? ''));
       stateLine = `\n    <span class="cv-score">${sub}<span class="cv-den">/100</span></span>\n    <span class="cv-state cv-state-${statusClass(st.priority)}">${esc(st.priority)}</span>\n    <span class="cv-ev cv-ev-${statusClass(st.evidence)}">${esc(st.evidence)}</span>\n    <span class="cv-line">${esc(viewLine)}</span>`;
     }
@@ -1444,15 +1453,20 @@ export function renderHtmlReport(scan) {
     .cat-priority { --cat: #f87171; }
     .cat-critical { --cat: #ef4444; }
     .cat-skipped { --cat: #8b8b95; }
+    /* score + pills share the .cat-mid row; pills WRAP (flex-wrap) instead of
+       overflowing the card at the narrowest grid cell (228px) — owner-flagged
+       live bug: REPETITION 100/100 + CRITICAL + FINDINGS hung FINDINGS off the
+       right edge. min-width: 0 lets the flex row shrink; row-gap keeps wrapped
+       pill rows breathing. */
     .cat-top { display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; }
     .cat-name { font-weight: 800; font-size: .95rem; letter-spacing: .03em; color: var(--ink); }
     .cat-go { color: var(--cat, #8b8b95); font-size: .69rem; font-weight: 800; text-transform: uppercase; letter-spacing: .09em; }
     .cat-card:hover .cat-go, .cat-card:focus-visible .cat-go { text-decoration: underline; }
-    .cat-mid { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; margin: .55rem 0 .15rem; }
+    .cat-mid { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; min-width: 0; margin: .55rem 0 .15rem; }
     .cat-score { font-family: var(--font-display); font-weight: 400; font-size: 1.75rem; letter-spacing: .01em; color: var(--cat, var(--ink)); }
     .cat-den { font-size: .78rem; font-weight: 600; color: var(--ink-faint); }
     .cat-state { font-size: .66rem; font-weight: 800; letter-spacing: .07em; padding: .2rem .6rem; border-radius: 999px; color: #0a0a0b; background: var(--cat, #8b8b95); }
-    .cat-pills { display: flex; align-items: baseline; gap: .35rem; }
+    .cat-pills { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-end; gap: .35rem; row-gap: .25rem; }
     .cat-ev { font-size: .64rem; font-weight: 800; letter-spacing: .07em; padding: .17rem .55rem; border-radius: 999px; background: transparent; border: 1px solid; text-align: center; }
     .cat-ev-findings { color: #f87171; border-color: #f87171; }
     .cat-ev-measured { color: #a1a1aa; border-color: #a1a1aa; }

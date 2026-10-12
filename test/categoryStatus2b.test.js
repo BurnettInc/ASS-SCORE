@@ -9,6 +9,13 @@ import { validateUrl } from '../src/fetch/ssrf.js';
 import { createReportToken } from '../src/paywall.js';
 import { categoryPriority, categoryEvidence, categoryStatus } from '../src/reportHtml.js';
 
+// Band-aware MEASURED one-liner copy (owner follow-up on #37): the CLEAN band
+// (metrics only, score 0-9) gets the nothing-found flavor; every band from
+// NEEDS WORK up gets the honest "score comes from generic-content
+// measurements" line — the pill stays MEASURED at every band (Job #2B).
+const MEASURED_CONCERN_LINE = 'Score comes from generic-content measurements — no single line crossed the threshold to quote.';
+const MEASURED_CLEAN_LINE = 'Measurements found nothing to roast here.';
+
 /**
  * JOB #2B REGRESSION — the two-axis category status contract (owner
  * requirement #8 from the Job #2B brief).
@@ -298,20 +305,26 @@ test('surface: MEASURED evidence renders at the low CLEAN band and the upper-mid
     assert.ok(low.includes('<span class="cat-state">CLEAN</span>'), 'infoDensity (5): priority pill CLEAN');
     assert.ok(low.includes('<span class="cat-ev cat-ev-measured">MEASURED</span>'), 'infoDensity (5): evidence pill MEASURED at the low band');
     assert.ok(low.includes('Measurements only'), 'infoDensity (5): Measurements only line');
+    assert.ok(low.includes(MEASURED_CLEAN_LINE), 'infoDensity (5): CLEAN-band MEASURED keeps the clean one-liner');
+    assert.ok(!low.includes(MEASURED_CONCERN_LINE), 'infoDensity (5): no concern copy at a CLEAN band');
     const lowView = viewSlice(lowHtml, 'infodensity');
     assert.ok(lowView.includes('cv-state cv-state-clean">CLEAN</span>'), 'infoDensity (5) view: CLEAN priority pill');
     assert.ok(lowView.includes('cv-ev cv-ev-measured">MEASURED</span>'), 'infoDensity (5) view: MEASURED evidence pill');
 
+    assert.ok(lowView.includes(MEASURED_CLEAN_LINE), 'infoDensity (5) view: same clean one-liner on the focused view');
     const upHtml = await paidHtml(app.base, UP_ID);
     const up = cardByHref(upHtml, 'cat-infodensity');
     assert.ok(up.includes('class="cat-card cat-priority"'), 'infoDensity (55): PRIORITY band card class');
     assert.ok(up.includes('<span class="cat-state">PRIORITY</span>'), 'infoDensity (55): priority pill PRIORITY');
     assert.ok(up.includes('<span class="cat-ev cat-ev-measured">MEASURED</span>'), 'infoDensity (55): evidence pill MEASURED at PRIORITY band');
     assert.ok(up.includes('Measurements only'), 'infoDensity (55): Measurements only line');
+    assert.ok(up.includes(MEASURED_CONCERN_LINE), 'infoDensity (55): PRIORITY-band MEASURED gets the honest concern copy');
+    assert.ok(!up.includes(MEASURED_CLEAN_LINE), 'infoDensity (55): never the CLEAN nothing-found flavor at a concern band');
     assert.ok(!up.includes('cat-ev-findings'), 'infoDensity (55): never FINDINGS — measurements stay neutral at any band');
     const upView = viewSlice(upHtml, 'infodensity');
     assert.ok(upView.includes('cv-state cv-state-priority">PRIORITY</span>'), 'infoDensity (55) view: PRIORITY priority pill');
     assert.ok(upView.includes('cv-ev cv-ev-measured">MEASURED</span>'), 'infoDensity (55) view: MEASURED evidence pill');
+    assert.ok(upView.includes(MEASURED_CONCERN_LINE), 'infoDensity (55) view: same concern copy on the focused view');
     // Control in the SAME upper scan: a real-roast category (boilerplate 62)
     // keeps FINDINGS evidence — the two axes never bleed into each other.
     const control = cardByHref(upHtml, 'cat-boilerplate');
