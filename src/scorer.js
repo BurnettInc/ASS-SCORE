@@ -116,7 +116,18 @@ const C2_MAX_CREDIT = 18;
  *            infoDensity?: {score?:number}, repetitive?: {score?:number},
  *            crossPage?: {score?:number|null}, fingerprints?: {score?:number},
  *            assets?: {score?:number} }} ruleResults
- * @returns {{ slopScore: number, components: Record<string,{score:number,weight:number,weighted:number}> }}
+ * @returns {{ slopScore: number,
+ *             components: Record<string,{score:number,weight:number,weighted:number}>,
+ *             preRoundTotal: number,
+ *             credits: Array<{id:string, amount:number, reason:string}> }}
+ *
+ * The return extension (Job 1B — "Explain the Score", 2026-10-12) is purely
+ * additive: `preRoundTotal` (the weighted total BEFORE credits — exactly the
+ * `total` the credits are added to) and `credits` (the credits that ACTUALLY
+ * applied, each with a plain-English reason). No scoring behavior changes:
+ * same weights, same gates, same credit math, same single Math.round + clamp.
+ * The renderer and any consumer derive display numbers ONLY from these
+ * returned values — never from re-implemented credit gates.
  */
 export function computeSlopScore(ruleResults = {}) {
   const components = {};
@@ -161,15 +172,29 @@ export function computeSlopScore(ruleResults = {}) {
   // C2 cannot — crossPage is null there, below the 80 gate.
   const scoreOf = (key) => (Number.isFinite(ruleResults[key]?.score) ? ruleResults[key].score : 0);
   let credit = 0;
+  const credits = [];
   if (scoreOf('infoDensity') >= C1_INFO_DENSITY_BAR && scoreOf('fingerprints') >= C1_FINGERPRINTS_BAR) {
     credit += C1_CREDIT;
+    credits.push({
+      id: 'C1',
+      amount: C1_CREDIT,
+      reason: `Template-stack corroboration: heavy template wording AND design fingerprints together (+${C1_CREDIT}).`,
+    });
   }
   if (scoreOf('crossPage') >= C2_GATE) {
     const k = PHASE2_CATEGORIES.filter((key) => scoreOf(key) >= C2_ELEVATED_BAR).length;
-    credit += Math.min(C2_MAX_CREDIT, C2_PER_ELEVATED_CATEGORY * (k - 1));
+    const c2 = Math.min(C2_MAX_CREDIT, C2_PER_ELEVATED_CATEGORY * (k - 1));
+    credit += c2;
+    // Plain-English reason reflects the REAL k (the elevated-category count
+    // that produced the amount).
+    credits.push({
+      id: 'C2',
+      amount: c2,
+      reason: `Corroborated duplication: ${k} of 7 categories are elevated and pages are near-identical (+3 × (${k}−1) = +${c2}).`,
+    });
   }
 
   // Single round + clamp AFTER both credits (no intermediate rounding).
   const slopScore = Math.max(0, Math.min(100, Math.round(total + credit)));
-  return { slopScore, components };
+  return { slopScore, components, preRoundTotal: total, credits };
 }

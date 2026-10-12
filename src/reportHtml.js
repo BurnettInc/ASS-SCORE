@@ -17,6 +17,7 @@ import { publicScore } from './serialize.js';
 import { verdictBand, verdictLabel, scoreColor } from './verdict.js';
 import { CATEGORY_LABELS, CATEGORY_ONE_LINERS } from './categories.js';
 import { buildFreePayload, DISCLAIMER } from './paywall.js';
+import { computeSlopScore } from './scorer.js';
 
 /** Roast info (pool emoji/label + line) with the stored-line override. */
 function roastInfoFor(scan) {
@@ -574,6 +575,99 @@ export function renderHtmlReport(scan) {
   const publicVerdict = verdictBand(pubScore);
   const verdictClass = { 'BEYOND ASS': 'b-beyond', 'CATASTROPHICALLY ASSY': 'b-catastrophic', 'EXTREMELY ASSY': 'b-extreme', 'HEAVILY ASSY': 'b-heavily-assy', 'VERY ASSY': 'b-very', 'PRETTY ASSY': 'b-pretty-assy', 'ASSY': 'b-assy', 'SLIGHTLY ASSY': 'b-slightly-assy', 'MOSTLY CLEAN': 'b-mostly-clean', 'CLEAN': 'b-clean' }[publicVerdict.shortLabel] ?? 'b-very';
   const verdictLine = `<p class="verdict ${verdictClass}">${verdictLabel(pubScore)}</p>`;
+
+  // --- "Why this score?" (Job 1B, owner spec 2026-10-12) ----------------------
+  // A compact explanation under the hero scale. SOURCE OF TRUTH: the REAL
+  // computeSlopScore over the STORED breakdown — the renderer never re-implements
+  // the credit gates, it only formats what the scorer returns. The hero's big
+  // number stays the STORED score (pubScore, as always); the calculation block's
+  // final line also presents the STORED score — the scorer's recomputed slopScore
+  // is displayed only when it equals the stored score (a recompute-vs-stored
+  // mismatch would be a bug elsewhere, not something the display absorbs — the
+  // regression tests pin that they agree for current scans). LEGACY SAFETY: scans
+  // without a breakdown (or with an empty one) render exactly as before — the
+  // whole block is skipped.
+  let scoreExplain = '';
+  const rawBreakdown = scan.breakdown;
+  if (rawBreakdown && typeof rawBreakdown === 'object' && Object.keys(rawBreakdown).length > 0) {
+    const scorer = computeSlopScore(rawBreakdown);
+    const credits = Array.isArray(scorer.credits) ? scorer.credits : [];
+    const pre = Number.isFinite(scorer.preRoundTotal) ? scorer.preRoundTotal : 0;
+    const creditSum = credits.reduce((sum, c) => sum + (Number.isFinite(c.amount) ? c.amount : 0), 0);
+    const preAfter = pre + creditSum;
+    const finalDisplay = scorer.slopScore === pubScore ? scorer.slopScore : pubScore;
+    const fmt2 = (n) => Number.isFinite(n) ? n.toFixed(2) : '—';
+    const weightFmt = (w) => (Number.isFinite(w) ? w.toFixed(3) : '—');
+
+    // (a) weighted category total, (b) each APPLIED credit with reason + amount,
+    // (c) pre-round total (weighted + credits) — credits case only — (d) final
+    // score. Only credits that ACTUALLY fired are ever rendered. Markup keeps
+    // two REPORT-LEVEL sacred constraints: no <table>/<tr> anywhere (the
+    // narrative report has no legacy evidence table) and no raw `"><` byte
+    // sequence (attribute-close never directly followed by `<`) — every
+    // attribute-bearing tag is newline-separated from the next tag, and the
+    // rows are a definition list, not a table.
+    const rows = [`<div class="score-explain-row score-explain-base">
+        <dt>Weighted category total</dt>
+        <dd>${fmt2(pre)}</dd>
+      </div>`];
+    for (const c of credits) {
+      rows.push(`<div class="score-explain-row score-explain-credit">
+        <dt>Credit ${esc(c.id)}</dt>
+        <dd class="score-explain-amt">+${c.amount}</dd>
+        <dd class="score-explain-reason">${esc(c.reason)}</dd>
+      </div>`);
+    }
+    if (credits.length > 0) {
+      rows.push(`<div class="score-explain-row score-explain-pre">
+        <dt>Pre-round total (weighted + credits)</dt>
+        <dd>${fmt2(preAfter)}</dd>
+      </div>`);
+    }
+    rows.push(`<div class="score-explain-row score-explain-final">
+      <dt>Final score (rounded, clamped)</dt>
+      <dd>${finalDisplay}</dd>
+    </div>`);
+
+    // The deep-dive grid: every category's score, weight and weighted
+    // contribution — straight from the scorer's components (no math here).
+    const catRows = Object.entries(scorer.components)
+      .map(([key, comp]) => {
+        const note = comp.note ? `<div class="score-explain-cat-note-row">
+          <span>${esc(comp.note)}</span>
+        </div>` : '';
+        return `<div class="score-explain-cat">
+          <span class="score-explain-cat-name">${esc(CATEGORY_LABELS[key] ?? key)}</span>
+          <span>${comp.score}</span>
+          <span>${weightFmt(comp.weight)}</span>
+          <span>${fmt2(comp.weighted)}</span>
+        </div>${note}`;
+      })
+      .join('');
+
+    scoreExplain = `<details class="score-explain">
+  <summary>Why this score?</summary>
+  <div class="score-explain-body">
+    <dl class="score-explain-rows">
+      ${rows.join('\n      ')}
+    </dl>
+    ${credits.length === 0 ? '<p class="score-explain-none">No scoring credits applied.</p>' : ''}
+    <p class="score-explain-note">Score = round(weighted total + credits), clamped 0–100.</p>
+    <details class="score-explain-detail">
+      <summary>View score calculation</summary>
+      <div class="score-explain-cats">
+        <div class="score-explain-cat score-explain-cat-head">
+          <span>Category</span>
+          <span>Score</span>
+          <span>Weight</span>
+          <span>Weighted</span>
+        </div>
+        ${catRows}
+      </div>
+    </details>
+  </div>
+</details>`;
+  }
 
   // Deterministic personality line (stored, or derived for pre-roast rows).
   const roastInfo = roastInfoFor(scan);
@@ -1209,6 +1303,43 @@ export function renderHtmlReport(scan) {
     .hero-gauge { width: min(430px, 100%); height: 13px; margin: .35rem auto 0; border-radius: 999px; background: rgba(255,255,255,.07); border: 1px solid var(--line-strong); overflow: hidden; }
     .hero-gauge-fill { display: block; height: 100%; border-radius: 999px; background: var(--band, #f87171); }
     .hero-scale { color: var(--ink-faint); font-size: .72rem; letter-spacing: .16em; text-transform: uppercase; margin: .9rem 0 0; }
+    /* the "Why this score?" explainer (Job 1B 2026-10-12): compact, muted,
+       inside the hero under the scale caption; mirrors the fc-receipts details
+       pattern (summary pill -> bordered body). The hero number/verdict/gauge
+       above are untouched — this block only adds optional reading below. */
+    .score-explain { max-width: 560px; margin: 1.15rem auto 0; text-align: left; }
+    .score-explain > summary { display: inline-flex; align-items: center; gap: .5rem; cursor: pointer; list-style: none; user-select: none; color: var(--ink-faint); font-size: .76rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; border: 1px solid var(--line-strong); border-radius: 999px; padding: .5rem 1.1rem; background: var(--surface-2); transition: border-color .15s ease, color .15s ease, background-color .15s ease; }
+    .score-explain > summary:hover, .score-explain > summary:focus-visible { border-color: var(--ass); color: var(--ink); background: var(--surface); }
+    .score-explain > summary:focus-visible { outline: 2px solid var(--ass); outline-offset: 2px; }
+    .score-explain > summary::-webkit-details-marker { display: none; }
+    .score-explain > summary::before { content: "▸"; color: var(--ass); font-size: .8rem; line-height: 1; }
+    .score-explain[open] > summary::before { content: "▾"; }
+    .score-explain-body { margin-top: .7rem; border: 1px solid var(--line); border-left: 3px solid var(--ass); border-radius: 12px; background: #0d0d0f; padding: .95rem 1.1rem 1.05rem; font-size: .86rem; color: var(--ink-dim); }
+    .score-explain-rows { margin: 0; }
+    .score-explain-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .9rem; padding: .32rem 0; }
+    .score-explain-row dt { flex: 1 1 60%; min-width: 13rem; text-align: left; font-weight: 600; color: var(--ink-faint); font-size: .86rem; }
+    .score-explain-row dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 700; font-size: .86rem; }
+    .score-explain-credit dd.score-explain-amt { color: var(--worse); }
+    .score-explain-credit dd.score-explain-reason { flex-basis: 100%; order: 3; text-align: left; color: var(--ink-faint); font-weight: 400; font-size: .8rem; line-height: 1.5; margin-top: .15rem; }
+    .score-explain-pre dd { color: var(--warn); }
+    .score-explain-final { margin-top: .5rem; border-top: 1px solid var(--line); padding-top: .65rem; }
+    .score-explain-final dt, .score-explain-final dd { color: var(--ass); font-family: var(--font-display); font-size: 1.05rem; letter-spacing: .04em; }
+    .score-explain-none { margin: .55rem 0 0; color: var(--ink-faint); font-size: .82rem; }
+    .score-explain-note { margin: .6rem 0 0; color: var(--ink-faint); font-size: .78rem; font-family: var(--mono); }
+    .score-explain-detail { margin-top: .8rem; border-top: 1px dashed var(--line); padding-top: .7rem; }
+    .score-explain-detail > summary { cursor: pointer; list-style: none; user-select: none; color: var(--ink-dim); font-weight: 700; font-size: .82rem; letter-spacing: .04em; }
+    .score-explain-detail > summary::-webkit-details-marker { display: none; }
+    .score-explain-detail > summary:hover { color: var(--ass); }
+    .score-explain-detail > summary::before { content: "▸ "; color: var(--ass); }
+    .score-explain-detail[open] > summary::before { content: "▾ "; }
+    .score-explain-cats { margin-top: .7rem; }
+    .score-explain-cat { display: flex; align-items: center; gap: .6rem; padding: .22rem .35rem; font-size: .82rem; }
+    .score-explain-cat span:first-child { flex: 1; text-align: left; }
+    .score-explain-cat span:not(:first-child) { width: 4.6rem; text-align: right; color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+    .score-explain-cat-head { border-bottom: 1px solid var(--line); color: var(--ink-faint); font-weight: 600; text-transform: uppercase; font-size: .68rem; letter-spacing: .1em; }
+    .score-explain-cat-head span { color: var(--ink-faint); }
+    .score-explain-cat-name { color: var(--ink); font-weight: 600; }
+    .score-explain-cat-note-row { padding: .1rem .35rem .5rem; color: var(--ink-faint); font-size: .74rem; line-height: 1.45; }
     /* the one-line verdict joke now lives INSIDE the score card, directly
        under the badge pill (owner reorder 2026-10-10); hand font, slightly
        tighter than the old standalone section so the card stays scannable */
@@ -1462,6 +1593,7 @@ export function renderHtmlReport(scan) {
       <span class="hero-gauge-fill" style="width:${pubScore}%"> </span>
     </div>
     <p class="hero-scale">0 = LEAST ASS / 100 = MAX ASS</p>
+    ${scoreExplain}
   </section>
 
   ${breakdownSection}
