@@ -303,7 +303,7 @@ test('composition: TB-shape synthetic farm (skeleton 100 -> crossPage\' 80) repr
 // GROUP 9 — spec-parity guard: no category/weight/verdict/computeSlopScore
 // surface changes; thresholds are the recommended values
 // ---------------------------------------------------------------------------
-test('spec parity: knobs are the recommended values and no engine surface changed', () => {
+test('spec parity: knobs are the recommended values and the return surface is {slopScore, components, preRoundTotal, credits}', () => {
   assert.equal(SKEL_PAIR_T, 0.75);
   assert.equal(SKEL_COVERAGE_BAR, 0.75);
   assert.equal(SKEL_SUB_WEIGHT, 0.8);
@@ -314,7 +314,7 @@ test('spec parity: knobs are the recommended values and no engine surface change
   assert.deepEqual(VERDICT_BANDS.map((b) => b.max), [9, 19, 29, 39, 49, 59, 69, 79, 89, 100]);
   const input = { ...STORED.franchise, crossPage: 100 };
   const r = computeSlopScore(cat(input));
-  assert.deepEqual(Object.keys(r).sort(), ['components', 'slopScore']);
+  assert.deepEqual(Object.keys(r).sort(), ['components', 'credits', 'preRoundTotal', 'slopScore']);
   for (const [key, comp] of Object.entries(r.components)) {
     assert.deepEqual(Object.keys(comp).sort(), ['score', 'weight', 'weighted']);
     assert.equal(comp.score, input[key]);

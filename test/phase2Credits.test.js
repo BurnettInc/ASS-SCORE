@@ -203,12 +203,12 @@ test('stack: absolute ceiling clamps to exactly 100 — all categories at 100', 
 // Return-shape and determinism guards
 // ---------------------------------------------------------------------------
 
-test('scorer: return shape unchanged ({slopScore, components}); deterministic across calls', () => {
+test('scorer: return shape is {slopScore, components, preRoundTotal, credits}; deterministic across calls', () => {
   const input = { filler: 0, boilerplate: 32, infoDensity: 50, repetitive: 7, crossPage: 0, fingerprints: 15, assets: 3 };
   const a = computeSlopScore(cat(input));
   const b = computeSlopScore(cat(input));
   assert.deepEqual(a, b, 'same input -> identical output');
-  assert.deepEqual(Object.keys(a).sort(), ['components', 'slopScore']);
+  assert.deepEqual(Object.keys(a).sort(), ['components', 'credits', 'preRoundTotal', 'slopScore']);
   assert.ok(Number.isInteger(a.slopScore) && a.slopScore >= 0 && a.slopScore <= 100);
   for (const [k, c] of Object.entries(a.components)) {
     assert.ok(Number.isFinite(c.score) && Number.isFinite(c.weight) && Number.isFinite(c.weighted), `${k} component shape`);
