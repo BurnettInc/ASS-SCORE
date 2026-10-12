@@ -31,10 +31,24 @@ import { renderHtmlReport, breakdownFor } from '../reportHtml.js';
  *
  * Response (200, password correct):
  *   { views: { total, today, last30d: [{date, count} x30], recent: [{ts, ip,
- *     ua, path} x latest 50] }, scans: { total, today, last30d: x30 },
- *     purchases: { total, today, last30d: x30 } }
- * (the JSON shape is additive — views/scans untouched; the HTML page is a
- * rendering of that object)
+ *     ua, path, ref} x latest 50] }, sources: { total, top: [{source, count}
+ *     x10] }, bots: { total, today, last30d: [{date, count} x30], recent:
+ *     [{ts, ip, ua, path, ref, reason} x latest 20] }, scans: { total, today,
+ *     last30d: x30 }, purchases: { total, today, last30d: x30 } }
+ * (the JSON shape is additive — views/scans/purchases untouched; the HTML page
+ * is a rendering of that object)
+ *
+ * `sources` (owner 2026-10-10) answers "WHERE does the traffic come from":
+ * the last-30d window (the same viewFloorTs floor as the views series)
+ * aggregated per referrer HOSTNAME — ref === '' is bucketed as 'direct';
+ * leading www. is stripped. `top` is the top 10 {source, count} sorted
+ * descending, `total` is the whole window's view count.
+ *
+ * `bots` (owner 2026-10-10) answers "prove it's not a bot": every hit the
+ * track route DROPPED (empty UA / webdriver / known-bot UA / per-IP 30s
+ * dedup) lands in the bot_hits ledger; these counts mirror the views floors
+ * exactly (total = epoch floor, today = todayViewFloorTs, last30d =
+ * viewFloorTs, recent = latest 20 at/after the epoch).
  *
  * `purchases` is the paid-order ledger (webhook_events — one row per accepted
  * full-report order, any status), the same source of truth the webhook route
@@ -75,10 +89,11 @@ function fmtLocalTime(ts) {
 
 const truncate = (s, n) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 
-/** Pure-CSS grouped bar chart + recent-views table, fully server-rendered. */
+/** Pure-CSS grouped bar chart + cards/tables, fully server-rendered. */
 function renderAdminPage(stats, generatedAt, opts = {}) {
-  const { views, scans, purchases } = stats;
+  const { views, scans, purchases, sources, bots } = stats;
   const hasViews = views.total > 0 || views.recent.length > 0 || views.last30d.some((d) => d.count > 0);
+  const hasBots = bots.total > 0 || bots.recent.length > 0 || bots.last30d.some((d) => d.count > 0);
   // EPOCAH CUTOVER (owner 2026-10-07): show the counting floor + the reset
   // button. epoch null (fresh/dev DBs) => header says all time, no cutover yet.
   const epoch = typeof opts.epoch === 'string' && opts.epoch !== '' ? opts.epoch : null;
@@ -95,19 +110,22 @@ function renderAdminPage(stats, generatedAt, opts = {}) {
   const scanMax = Math.max(0, ...scans.last30d.map((d) => d.count));
   const viewMax = Math.max(0, ...views.last30d.map((d) => d.count));
   const purchaseMax = Math.max(0, ...purchases.last30d.map((d) => d.count));
+  const botMax = Math.max(0, ...bots.last30d.map((d) => d.count));
   const barHeight = (count, max) => (max > 0 ? Math.max(1, Math.round((count / max) * CHART_HEIGHT_PX)) : 1);
 
   const chartCells = scans.last30d
     .map((scanDay, i) => {
       const viewDay = views.last30d[i];
       const purchaseDay = purchases.last30d[i];
+      const botDay = bots.last30d[i];
       const tick = i % 5 === 0 ? `<span class="tick">${esc(scanDay.date.slice(5))}</span>` : '';
       return [
-        `<div class="day" title="${esc(`${scanDay.date} — scans ${scanDay.count}, views ${viewDay.count}, reports ${purchaseDay.count}`)}">`,
+        `<div class="day" title="${esc(`${scanDay.date} — scans ${scanDay.count}, views ${viewDay.count}, reports ${purchaseDay.count}, bots ${botDay.count}`)}">`,
         `<div class="bars">`,
         `<div class="bar bar-scans" style="height:${barHeight(scanDay.count, scanMax)}px" title="${esc(`${scanDay.date} · ${scanDay.count} scans`)}"></div>`,
         `<div class="bar bar-views" style="height:${barHeight(viewDay.count, viewMax)}px" title="${esc(`${viewDay.date} · ${viewDay.count} views`)}"></div>`,
         `<div class="bar bar-reports" style="height:${barHeight(purchaseDay.count, purchaseMax)}px" title="${esc(`${purchaseDay.date} · ${purchaseDay.count} reports`)}"></div>`,
+        `<div class="bar bar-bots" style="height:${barHeight(botDay.count, botMax)}px" title="${esc(`${botDay.date} · ${botDay.count} bots blocked`)}"></div>`,
         `</div>`,
         tick,
         `</div>`,
@@ -125,6 +143,41 @@ function renderAdminPage(stats, generatedAt, opts = {}) {
       </tr>`
     )
     .join('');
+
+  // Top Referrers (owner 2026-10-10): sources.total is the whole window, so
+  // every bar's width is count/total (round half up, min 1% when nonzero).
+  const sourceRows = sources.top
+    .map((s) => {
+      const pct = sources.total > 0 ? Math.max(s.count > 0 ? 1 : 0, Math.round((s.count / sources.total) * 100)) : 0;
+      return `<div class="source">
+        <div class="src-line"><span class="src-name" title="${esc(s.source)}">${esc(s.source)}</span><span class="src-count">${s.count}<span class="src-pct">${pct}%</span></span></div>
+        <div class="src-bar"><div class="src-fill" style="width:${pct}%"></div></div>
+      </div>`;
+    })
+    .join('');
+  const sourcesBlock = sourceRows
+    ? `<div class="sources"><div class="src-scale">bar width = share of ${esc(String(sources.total))} views in the window (top ${sources.top.length})</div>${sourceRows}</div>`
+    : `<div class="empty">No referrers recorded in the window yet. Views with no referrer count as "direct".</div>`;
+
+  const botRows = bots.recent
+    .map(
+      (b) => `<tr>
+        <td class="col-time">${esc(fmtLocalTime(b.ts))}</td>
+        <td class="col-ip">${esc(b.ip)}</td>
+        <td class="col-path" title="${esc(b.path)}">${esc(b.path)}</td>
+        <td class="col-ua" title="${esc(b.ua)}">${esc(truncate(b.ua, UA_DISPLAY_MAX))}</td>
+        <td class="col-reason" title="${esc(b.reason)}">${esc(b.reason)}</td>
+      </tr>`
+    )
+    .join('');
+  // hasBots is the gate so a traffic-less dashboard keeps its empty state
+  // (the existing empty-state test asserts no <table> when nothing was sent).
+  const botsTable = hasBots
+    ? `<div class="tablewrap"><table>
+        <thead><tr><th>Time</th><th>IP</th><th>Path</th><th>User agent</th><th>Reason</th></tr></thead>
+        <tbody>${botRows}</tbody>
+      </table></div>`
+    : `<div class="empty">No bot hits recorded yet. Views here are the humans-only ledger.</div>`;
 
   const empty = `<div class="empty">No views recorded yet. Once the site beacon starts receiving hits, they'll show up here.</div>`;
   const chartBlock = hasViews ? `<div class="chart">${chartCells}</div>` : empty;
@@ -172,12 +225,12 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system
 .card h2{margin:0 0 14px;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text)}
 .legend{display:flex;gap:18px;align-items:center;color:var(--muted);font-size:12px;margin-bottom:10px}
 .sw{width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:6px;vertical-align:-1px}
-.sw-scans{background:var(--orange)}.sw-views{background:var(--green)}.sw-reports{background:var(--red)}
+.sw-scans{background:var(--orange)}.sw-views{background:var(--green)}.sw-reports{background:var(--red)}.sw-bots{background:var(--yellow)}
 .chart{display:flex;align-items:flex-end;gap:2px}
 .day{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;min-width:0}
 .bars{height:${CHART_HEIGHT_PX}px;width:100%;display:flex;align-items:flex-end;justify-content:center;gap:2px}
 .bar{width:100%;max-width:10px;border-radius:2px 2px 0 0}
-.bar-scans{background:var(--orange)}.bar-views{background:var(--green)}.bar-reports{background:var(--red)}
+.bar-scans{background:var(--orange)}.bar-views{background:var(--green)}.bar-reports{background:var(--red)}.bar-bots{background:var(--yellow)}
 .tick{font-size:9px;color:var(--muted);margin-top:4px;white-space:nowrap}
 .tablewrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:13px}
@@ -189,6 +242,16 @@ tr:hover td{background:${'#1a2336'}}
 .col-ip{color:var(--yellow)}
 .col-path{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--lime);max-width:340px;overflow:hidden;text-overflow:ellipsis}
 .col-ua{color:var(--muted);max-width:280px;overflow:hidden;text-overflow:ellipsis}
+.col-reason{color:var(--yellow);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.sources{display:flex;flex-direction:column;gap:10px}
+.src-scale{color:var(--muted);font-size:11px;margin-bottom:2px}
+.source{display:flex;flex-direction:column;gap:3px}
+.src-line{display:flex;justify-content:space-between;align-items:baseline;gap:12px;font-size:13px}
+.src-name{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.src-count{color:var(--text);font-weight:800;font-variant-numeric:tabular-nums}
+.src-pct{color:var(--muted);font-weight:400;font-size:11px;margin-left:6px;font-variant-numeric:tabular-nums}
+.src-bar{height:6px;border-radius:3px;background:${'#1c2436'};overflow:hidden}
+.src-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--green),var(--lime))}
 .empty{color:var(--muted);font-size:13px;padding:26px 8px;text-align:center;border:1px dashed var(--border);border-radius:10px}
 footer{margin-top:28px;color:${'#5b6b84'};font-size:12px;text-align:center;letter-spacing:.04em}
 @media (max-width:640px){.kpis{grid-template-columns:repeat(2,1fr)}.kpi-value{font-size:26px}}
@@ -211,17 +274,27 @@ footer{margin-top:28px;color:${'#5b6b84'};font-size:12px;text-align:center;lette
     ${kpi('SCANS TODAY', scans.today, BANDS.deepOrange)}
     ${kpi('VIEWS TOTAL', views.total, BANDS.orange)}
     ${kpi('VIEWS TODAY', views.today, BANDS.green)}
+    ${kpi('BOTS BLOCKED', bots.total, BANDS.yellow)}
+    ${kpi('BOTS TODAY', bots.today, BANDS.deepOrange)}
     ${kpi('FULL REPORTS PURCHASED', purchases.total, BANDS.red)}
     ${kpi('REPORTS TODAY', purchases.today, BANDS.red)}
   </section>
   <section class="card">
     <h2>Last 30 days</h2>
-    <div class="legend"><span class="sw sw-scans"></span>Scans&nbsp;<span class="sw sw-views"></span>Views&nbsp;<span class="sw sw-reports"></span>Reports</div>
+    <div class="legend"><span class="sw sw-scans"></span>Scans&nbsp;<span class="sw sw-views"></span>Views&nbsp;<span class="sw sw-reports"></span>Reports&nbsp;<span class="sw sw-bots"></span>Bots blocked</div>
     ${chartBlock}
+  </section>
+  <section class="card">
+    <h2>Top referrers <span class="gen">(last 30 days — where traffic comes from)</span></h2>
+    ${sourcesBlock}
   </section>
   <section class="card">
     <h2>Recent views <span class="gen">(${views.recent.length})</span></h2>
     ${tableBlock}
+  </section>
+  <section class="card">
+    <h2>Recent bot hits <span class="gen">(${bots.recent.length} — blocked, not counted as views)</span></h2>
+    ${botsTable}
   </section>
   <footer>Internal tool — ass-score.com</footer>
 </div>
@@ -416,21 +489,56 @@ export function adminRouter({ db, adminPassword, emailSender, now = () => new Da
     const viewCounts = new Map(db.pageViewDayCounts(viewFloorTs).map((d) => [d.date, d.count]));
     const scanCounts = new Map(db.scanDayCounts(ledgerFloorIso).map((d) => [d.date, d.count]));
     const purchaseCounts = new Map(db.webhookDayCounts(ledgerFloorIso).map((d) => [d.date, d.count]));
+    const botCounts = new Map(db.botHitDayCounts(viewFloorTs).map((d) => [d.date, d.count]));
     const last30dViews = [];
     const last30dScans = [];
     const last30dPurchases = [];
+    const last30dBots = [];
     for (let i = DAYS_IN_WINDOW - 1; i >= 0; i--) {
       const date = new Date(todayStartMs - i * DAY_MS).toISOString().slice(0, 10);
       last30dViews.push({ date, count: viewCounts.get(date) ?? 0 });
       last30dScans.push({ date, count: scanCounts.get(date) ?? 0 });
       last30dPurchases.push({ date, count: purchaseCounts.get(date) ?? 0 });
+      last30dBots.push({ date, count: botCounts.get(date) ?? 0 });
     }
+    // Top Referrers (owner 2026-10-10): bucket the last-30d window by ref
+    // HOSTNAME (new URL().hostname, leading www. stripped; '' -> 'direct').
+    // total = the whole window's views, so the bars read as shares of it.
+    const sourceBuckets = new Map();
+    let directCount = 0;
+    for (const { ref, count } of db.pageViewSources(viewFloorTs)) {
+      if (ref === '') {
+        directCount += count;
+        continue;
+      }
+      let source;
+      try {
+        source = new URL(ref).hostname.replace(/^www\./, '') || 'invalid';
+      } catch {
+        source = ref; // not a parseable URL — keep the raw ref as the evidence
+      }
+      sourceBuckets.set(source, (sourceBuckets.get(source) ?? 0) + count);
+    }
+    if (directCount > 0) sourceBuckets.set('direct', directCount);
     const stats = {
       views: {
         total: db.countPageViews(epochMs),
         today: db.countPageViewsSince(todayViewFloorTs),
         last30d: last30dViews,
         recent: db.recentPageViews(epochMs),
+      },
+      sources: {
+        total: db.countPageViewsSince(viewFloorTs),
+        top: [...sourceBuckets.entries()]
+          .map(([source, count]) => ({ source, count }))
+          .sort((a, b) => b.count - a.count || (a.source < b.source ? -1 : a.source > b.source ? 1 : 0))
+          .slice(0, 10),
+      },
+      bots: {
+        total: db.countBotHitsTotal(epochMs),
+        today: db.countBotHitsSince(todayViewFloorTs),
+        last30d: last30dBots,
+        recent: db.recentBotHits(epochMs),
       },
       scans: {
         total: db.countScansTotal(epochIso),
