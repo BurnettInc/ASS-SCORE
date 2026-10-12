@@ -354,7 +354,8 @@ test('GET HTML: free page shows the IMAGERY number; paid report renders findings
   // on the IMAGERY category CARD (score number + state pill) — existing
   // classification, values unchanged (50/100 NEEDS ATTENTION).
   assert.ok(html.includes('<span class="cat-score">50<span class="cat-den">/100</span></span>'), 'IMAGERY card shows the existing 50/100');
-  assert.ok(html.includes('<span class="cat-state">NEEDS ATTENTION</span>'), 'IMAGERY card shows the existing NEEDS ATTENTION classification');
+  assert.ok(html.includes('<span class="cat-state">PRIORITY</span>'), 'IMAGERY card shows the PRIORITY band pill');
+  assert.ok(html.includes('<span class="cat-ev cat-ev-findings">FINDINGS</span>'), 'IMAGERY card shows the FINDINGS evidence pill');
   assert.ok(html.includes('2 of 4 images come from stock photo sites'), 'stock finding rendered as a receipt');
   assert.ok(html.includes('generic alt'), 'alt finding rendered as a receipt');
   assert.ok(html.includes('Nothing meaningful to roast here.'), 'clean category line rendered (single-page scan leaves REPETITION skipped)');

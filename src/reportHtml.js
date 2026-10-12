@@ -813,7 +813,9 @@ export function renderHtmlReport(scan) {
       <span class="cat-name">${esc(label)}</span>
       <span class="cat-go">details →</span>
     </span>
-    <span class="cat-mid"><span class="cat-ev cat-ev-nodata">NOT ENOUGH DATA</span></span>
+    <span class="cat-mid">
+      <span class="cat-ev cat-ev-nodata">NOT ENOUGH DATA</span>
+    </span>
     <span class="cat-line">${note}</span>
   </a>`;
     }
