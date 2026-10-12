@@ -117,15 +117,51 @@ export function openDb(dbPath) {
   // bucketing happens in the admin route via SQLite's
   // datetime(ts/1000, 'unixepoch') — the same UTC convention the scan and
   // webhook ledgers use (created_at ISO strings, day = first 10 chars).
+  // `ref` is the referrer URL the beacon sends (document.referrer) — the
+  // admin "Top Referrers" source. NOT NULL DEFAULT '' backfills pre-migration
+  // rows to the 'direct' bucket, so old data reads exactly as if ref never
+  // existed.
   db.exec(`
     CREATE TABLE IF NOT EXISTS page_views (
       id   INTEGER PRIMARY KEY AUTOINCREMENT,
       ts   INTEGER NOT NULL,
       ip   TEXT NOT NULL,
       ua   TEXT NOT NULL DEFAULT '',
-      path TEXT NOT NULL
+      path TEXT NOT NULL,
+      ref  TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_page_views_ts ON page_views (ts);
+  `);
+  // Migration for the ref column (owner 2026-10-10): production DBs created
+  // before this feature keep their OLD page_views shape (CREATE TABLE IF NOT
+  // EXISTS is a no-op), so the column is added with a guarded, additive ALTER
+  // exactly like every other phase column (PRAGMA table_info check — the same
+  // pattern the scans migration uses). Fresh DBs never run it (the column is
+  // already there), and re-opening an already-migrated DB is a no-op.
+  const pvCols = db.prepare('PRAGMA table_info(page_views)').all().map((c) => c.name);
+  if (!pvCols.includes('ref')) {
+    db.exec("ALTER TABLE page_views ADD COLUMN ref TEXT NOT NULL DEFAULT ''");
+  }
+
+  // Bot-hit ledger (owner 2026-10-10): every beacon hit the route DROPS —
+  // empty UA, known-bot UA, webdriver, per-IP 30s dedup — is recorded here so
+  // the admin stats can PROVE the views ledger is humans-only (bots blocked
+  // KPI + daily bars + recent list). Same epoch-ms ts convention as
+  // page_views (Date.parse of the same injected clock), so retention purges
+  // both with the identical cutoff. `reason` is 'empty_ua' | 'webdriver' |
+  // 'ua:<matched pattern>' | 'dedup'. ts is indexed like page_views for the
+  // same floor-filtered day counts.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bot_hits (
+      id     INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts     INTEGER NOT NULL,
+      ip     TEXT NOT NULL,
+      ua     TEXT NOT NULL DEFAULT '',
+      path   TEXT NOT NULL DEFAULT '',
+      ref    TEXT NOT NULL DEFAULT '',
+      reason TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_bot_hits_ts ON bot_hits (ts);
   `);
 
   // Paid-report orders — the 'collect email before checkout' fulfillment flow
@@ -220,15 +256,34 @@ export function openDb(dbPath) {
   // old behavior. The paired statements exist because better-sqlite3 prepared
   // statements are static — the method picks the filtered one when a floor is
   // given and never builds SQL strings.
-  const insertPageViewStmt = db.prepare('INSERT INTO page_views (ts, ip, ua, path) VALUES (?, ?, ?, ?)');
+  const insertPageViewStmt = db.prepare('INSERT INTO page_views (ts, ip, ua, path, ref) VALUES (?, ?, ?, ?, ?)');
   const countPageViewsStmt = db.prepare('SELECT COUNT(*) AS n FROM page_views');
   const countPageViewsSinceStmt = db.prepare('SELECT COUNT(*) AS n FROM page_views WHERE ts >= ?');
   const pageViewDayCountsStmt = db.prepare(
     "SELECT substr(datetime(ts / 1000, 'unixepoch'), 1, 10) AS day, COUNT(*) AS n FROM page_views WHERE ts >= ? GROUP BY day"
   );
-  const recentPageViewsStmt = db.prepare('SELECT ts, ip, ua, path FROM page_views ORDER BY ts DESC LIMIT 50');
+  // Admin "Top Referrers" aggregation: per-ref counts in the floor window,
+  // descending. The route buckets refs into hostnames (and '' -> 'direct').
+  const pageViewRefCountsStmt = db.prepare(
+    'SELECT ref, COUNT(*) AS n FROM page_views WHERE ts >= ? GROUP BY ref ORDER BY n DESC'
+  );
+  const recentPageViewsStmt = db.prepare('SELECT ts, ip, ua, path, ref FROM page_views ORDER BY ts DESC LIMIT 50');
   const recentPageViewsSinceStmt = db.prepare(
-    'SELECT ts, ip, ua, path FROM page_views WHERE ts >= ? ORDER BY ts DESC LIMIT 50'
+    'SELECT ts, ip, ua, path, ref FROM page_views WHERE ts >= ? ORDER BY ts DESC LIMIT 50'
+  );
+  // Bot-hit ledger statements — mirrors of the page-view family (same epoch-ms
+  // ts convention, same floor-filtered day counts, same retention cutoff).
+  const insertBotHitStmt = db.prepare('INSERT INTO bot_hits (ts, ip, ua, path, ref, reason) VALUES (?, ?, ?, ?, ?, ?)');
+  const countBotHitsStmt = db.prepare('SELECT COUNT(*) AS n FROM bot_hits');
+  const countBotHitsSinceStmt = db.prepare('SELECT COUNT(*) AS n FROM bot_hits WHERE ts >= ?');
+  const botHitDayCountsStmt = db.prepare(
+    "SELECT substr(datetime(ts / 1000, 'unixepoch'), 1, 10) AS day, COUNT(*) AS n FROM bot_hits WHERE ts >= ? GROUP BY day"
+  );
+  const recentBotHitsStmt = db.prepare(
+    'SELECT ts, ip, ua, path, ref, reason FROM bot_hits ORDER BY ts DESC LIMIT 20'
+  );
+  const recentBotHitsSinceStmt = db.prepare(
+    'SELECT ts, ip, ua, path, ref, reason FROM bot_hits WHERE ts >= ? ORDER BY ts DESC LIMIT 20'
   );
   // Scan-count queries for admin stats EXCLUDE internal rows (admin-generated
   // scans must never move the public-facing counters — owner 2026-10-01).
@@ -473,10 +528,13 @@ export function openDb(dbPath) {
     /**
      * Record one accepted beacon hit. The route filters bots / empty UAs /
      * per-IP 30s dedup BEFORE calling this, so every insert is a real view.
-     * @param {{ ts: number, ip: string, ua: string, path: string }} view
+     * @param {{ ts: number, ip: string, ua: string, path: string, ref?: string }} view
+     *   `ref` is the sanitized referrer URL from document.referrer ('' when the
+     *   beacon sent none / it was not a string) — the admin sources aggregation
+     *   buckets it into a hostname, '' => 'direct'.
      */
-    insertPageView({ ts, ip, ua, path }) {
-      insertPageViewStmt.run(ts, ip, ua, path);
+    insertPageView({ ts, ip, ua, path, ref = '' }) {
+      insertPageViewStmt.run(ts, ip, ua, path, ref);
     },
     /** Total page-view rows (all time); with `sinceTs` (epoch ms) only rows at/after it. */
     countPageViews(sinceTs = null) {
@@ -490,10 +548,47 @@ export function openDb(dbPath) {
     pageViewDayCounts(sinceTs) {
       return pageViewDayCountsStmt.all(sinceTs).map((r) => ({ date: r.day, count: r.n }));
     },
+    /**
+     * Per-ref page-view counts with ts >= sinceTs, descending: [{ ref, count }].
+     * The admin route turns each ref into a hostname ('' refs -> the caller's
+     * 'direct' bucket). Only refs, so sources.total is the caller's own sum.
+     */
+    pageViewSources(sinceTs) {
+      return pageViewRefCountsStmt.all(sinceTs).map((r) => ({ ref: r.ref, count: r.n }));
+    },
     /** Latest 50 page views, newest first; with `sinceTs` only rows at/after it. */
     recentPageViews(sinceTs = null) {
       const rows = sinceTs === null ? recentPageViewsStmt.all() : recentPageViewsSinceStmt.all(sinceTs);
-      return rows.map((r) => ({ ts: r.ts, ip: r.ip, ua: r.ua, path: r.path }));
+      return rows.map((r) => ({ ts: r.ts, ip: r.ip, ua: r.ua, path: r.path, ref: r.ref }));
+    },
+    // --- Bot-hit ledger (owner 2026-10-10) -----------------------------------
+    /**
+     * Record one DROPPED beacon hit (empty UA / webdriver / known-bot UA /
+     * per-IP 30s dedup). Called by the track route at every drop point BEFORE
+     * the 204 — the views ledger stays humans-only while bot_hits proves the
+     * filtering was real. Same epoch-ms ts convention as page views.
+     * @param {{ ts: number, ip: string, ua?: string, path?: string, ref?: string,
+     *           reason: 'empty_ua' | 'webdriver' | string } | { reason: string }} hit
+     */
+    insertBotHit({ ts, ip, ua = '', path = '', ref = '', reason }) {
+      insertBotHitStmt.run(ts, ip, ua, path, ref, reason);
+    },
+    /** Total bot-hit rows (all time); with `sinceTs` (epoch ms) only rows at/after it. */
+    countBotHitsTotal(sinceTs = null) {
+      return sinceTs === null ? countBotHitsStmt.get().n : countBotHitsSinceStmt.get(sinceTs).n;
+    },
+    /** Bot-hit rows with ts >= sinceTs (the 30-day window / 'today'). */
+    countBotHitsSince(sinceTs) {
+      return countBotHitsSinceStmt.get(sinceTs)?.n ?? 0;
+    },
+    /** Per-UTC-day bot-hit counts with ts >= sinceTs: [{ date, count }]. */
+    botHitDayCounts(sinceTs) {
+      return botHitDayCountsStmt.all(sinceTs).map((r) => ({ date: r.day, count: r.n }));
+    },
+    /** Latest 20 bot hits, newest first; with `sinceTs` only rows at/after it. */
+    recentBotHits(sinceTs = null) {
+      const rows = sinceTs === null ? recentBotHitsStmt.all() : recentBotHitsSinceStmt.all(sinceTs);
+      return rows.map((r) => ({ ts: r.ts, ip: r.ip, ua: r.ua, path: r.path, ref: r.ref, reason: r.reason }));
     },
     /** Total scan rows (all time); with `sinceIso` only rows created at/after it. */
     countScansTotal(sinceIso = null) {

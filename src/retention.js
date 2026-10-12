@@ -18,8 +18,8 @@
  * The first three tables store created_at as ISO-8601 strings
  * (e.g. `2026-09-23T12:00:00.000Z`), so the cutoff is compared
  * lexicographically against the ISO string — exact for same-format ISO
- * timestamps, no per-row date parsing. page_views stores ts as epoch
- * milliseconds (the homepage-beacon convention), so its cutoff is the
+ * timestamps, no per-row date parsing. page_views and bot_hits store ts as
+ * epoch milliseconds (the homepage-beacon convention), so their cutoff is the
  * epoch-ms equivalent of the same instant. Parameterized queries only; the
  * cutoff is never interpolated into SQL.
  *
@@ -49,15 +49,19 @@ export function runRetention({ db, now = () => new Date().toISOString(), maxAgeM
   const deleteScanEvents = conn.prepare('DELETE FROM scan_events WHERE created_at < ?');
   const deleteWebhookEvents = conn.prepare('DELETE FROM webhook_events WHERE created_at < ?');
   const deletePageViews = conn.prepare('DELETE FROM page_views WHERE ts < ?');
+  // bot_hits shares page_views' epoch-ms convention + 30-day retention
+  // (privacy page: beacon data — including bot hits — retained up to 30 days).
+  const deleteBotHits = conn.prepare('DELETE FROM bot_hits WHERE ts < ?');
 
   const scans = deleteScans.run(cutoffIso).changes;
   const scanEvents = deleteScanEvents.run(cutoffIso).changes;
   const webhookEvents = deleteWebhookEvents.run(cutoffIso).changes;
   const views = deletePageViews.run(cutoffMs).changes;
+  const bots = deleteBotHits.run(cutoffMs).changes;
 
   // Single-line outcome for Railway logs, e.g.
-  // '[retention] cutoff=2026-08-24T12:00:00.000Z scans=12 events=3 webhooks=0 views=41'
-  console.log(`[retention] cutoff=${cutoffIso} scans=${scans} events=${scanEvents} webhooks=${webhookEvents} views=${views}`);
+  // '[retention] cutoff=2026-08-24T12:00:00.000Z scans=12 events=3 webhooks=0 views=41 bots=7'
+  console.log(`[retention] cutoff=${cutoffIso} scans=${scans} events=${scanEvents} webhooks=${webhookEvents} views=${views} bots=${bots}`);
 
-  return { deleted: { scans, scanEvents, webhookEvents, views }, cutoffIso };
+  return { deleted: { scans, scanEvents, webhookEvents, views, bots }, cutoffIso };
 }
