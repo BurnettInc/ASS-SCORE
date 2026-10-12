@@ -37,10 +37,13 @@ import { createReportToken } from '../src/paywall.js';
  *
  *   AFTER (Job #2B): ORIGINALITY 32 renders "32/100 · NEEDS WORK · MEASURED ·
  *   Measurements only" — the NEEDS WORK pill is a band fact, not a roast
- *   claim, and the MEASURED evidence pill + neutral one-liner ("Score
- *   reflects measurements — no roastable findings.") carry the honest
- *   neutral reading the owner demanded. Numeric score and meter render
- *   exactly as before.
+ *   claim, and the MEASURED evidence pill + band-aware one-liner ("Score
+ *   comes from generic-content measurements — no single line crossed the
+ *   threshold to quote.") carry the honest reading the owner demanded: at a
+ *   NEEDS WORK band or worse the line owns the score's concern instead of
+ *   dismissing it (owner follow-up: "why no roastable findings at 32?"), and
+ *   a CLEAN band (metrics only) gets the nothing-found flavor. Numeric score
+ *   and meter render exactly as before.
  *
  * Invariants pinned here:
  *   (a) the exact ledger-story shape — ORIGINALITY 32 with metrics + zero
@@ -168,7 +171,11 @@ function viewSlice(html, key) {
   return html.slice(start, end >= 0 ? end : html.length);
 }
 
-const MEASURED_LINE = 'Score reflects measurements — no roastable findings.';
+// Band-aware MEASURED copy (owner follow-up): the NEEDS WORK / CRITICAL band
+// keeps the honest "score comes from generic-content measurements" line; the
+// CLEAN band (metrics only) gets the nothing-found flavor. Pills stay MEASURED.
+const MEASURED_LINE = 'Score comes from generic-content measurements — no single line crossed the threshold to quote.';
+const MEASURED_CLEAN_LINE = 'Measurements found nothing to roast here.';
 // Two-axis pill markup (Job #2B): priority pill is the score band; the
 // evidence pill states what backs the score.
 const PRIORITY_NEEDS_WORK = '<span class="cat-state">NEEDS WORK</span>';
