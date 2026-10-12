@@ -302,11 +302,10 @@ function renderFinding(scanId, categoryKey, categoryLabel, finding, insight, ind
   const extras = Array.isArray(extraEvidence) ? extraEvidence.map((x) => String(x)).filter((x) => x !== '') : [];
   const evidenceCount = 1 + extras.length;
   const receiptLis = `<li><strong>${esc(finding)}</strong></li>${extras.map((x) => `<li><strong>${esc(x)}</strong></li>`).join('')}`;
-  // anchorId: stable per-finding deep-link target (owner 2026-10-07) — the
-  // "See the full finding" links in What To Fix First point at the matching
-  // card inside its category's focused view (id="finding-<cat>-<n>", n = the
-  // within-category ordinal shown on the "Finding n" badge). Presentation
-  // only: an id attribute, no visible change.
+  // anchorId: stable per-finding id (owner 2026-10-07) — the focused-view JS
+  // needs id="finding-<cat>-<n>" (n = the within-category ordinal shown on
+  // the "Finding n" badge) to open a category and scroll to the right card.
+  // Presentation only: an id attribute, no visible change.
   const cardId = anchorId ? ` id="${anchorId}"` : '';
   return `\n  <div class="finding-card"${cardId}>
     <div class="fc-head">
@@ -321,13 +320,13 @@ function renderFinding(scanId, categoryKey, categoryLabel, finding, insight, ind
       </div>
       ${whyBlock}
       ${fixBlock}
-      <details class="fc-receipts">
-        <summary>
+      <div class="fc-receipts">
+        <div class="fc-receipts-head">
           <span class="rec-label">Show the receipts:</span>
           <span class="rec-count">${evidenceCount} line${evidenceCount === 1 ? '' : 's'} of evidence</span>
-        </summary>
+        </div>
         <ul>${receiptLis}</ul>
-      </details>
+      </div>
     </div>
   </div>`;
 }
@@ -869,12 +868,12 @@ export function renderHtmlReport(scan) {
   // --- 6. PER-CATEGORY FINDING SECTIONS (Phase 2C clone-source) -------------
   // Owner 2026-10-07: the dashboard's flat "The Actual Findings" list is
   // REMOVED — the per-category focused views are the canonical homes for
-  // findings (each card: roast / why / fix / receipts). What To Fix First
-  // deep-links into them (id="finding-<cat>-<n>"). The sections below stay in
-  // the document as the hidden Phase 2C clone-source: id="cat-<key>" anchors
-  // (breakdown cards + no-JS hash scroll) + the full per-category cards. They
-  // must NOT be removed — the focused views clone them client-side and the
-  // finding cards carry the deep-link anchors.
+  // findings (each card: roast / why / fix / receipts), and the finding cards
+  // carry id="finding-<cat>-<n>" anchors the focused-view JS scrolls to. The
+  // sections below stay in the document as the hidden Phase 2C clone-source:
+  // id="cat-<key>" anchors (breakdown cards + no-JS hash scroll) + the full
+  // per-category cards. They must NOT be removed — the focused views clone
+  // them client-side and the finding cards carry the anchors.
   // Groups render for categories with negative findings OR neutral metric
   // measurements — a metric-only category (e.g. low score but only MATTR/
   // stopword/sentence-length measurements) still shows its Measurements block.
@@ -943,8 +942,8 @@ export function renderHtmlReport(scan) {
       const label = CATEGORY_LABELS[g.key] ?? g.key;
       // Per-category ordinals inside the focused drill-down (the flat list
       // above carries the global ordinals; this section is the clone source).
-      // Each card carries its deep-link anchor id="finding-<cat>-<n>" — the
-      // fix-first "See the full finding" targets (owner 2026-10-07).
+      // Each card carries its id="finding-<cat>-<n>" anchor — the
+      // focused-view JS scroll target (owner 2026-10-07).
       return renderFinding(scan.id, g.key, label, grp.primary.finding, grp.primary.insight,
         grp.primary.idx, st ? st.state : null, i + 1, receiptTexts(grp.receipts),
         `finding-${g.key.toLowerCase()}-${i + 1}`);
@@ -981,9 +980,9 @@ export function renderHtmlReport(scan) {
   // are REMOVED (the flat-findings remnant — the owner calls it leftover) —
   // what stays is the hidden div carrying the id="cat-<key>" anchors
   // (breakdown cards, no-JS hash scroll) and the full per-category finding
-  // cards, including the id="finding-<cat>-<n>" deep-link targets the fix-first
-  // "See the full finding" links use. It must remain hidden and verbatim; the
-  // focused views clone from it on open.
+  // cards, including the id="finding-<cat>-<n>" focused-view scroll targets
+  // (owner 2026-10-07). It must remain hidden and verbatim; the focused views
+  // clone from it on open.
   const catSourcesSection = `
   <div class="cat-sources" hidden>
   ${findingGroups}
@@ -1031,9 +1030,6 @@ export function renderHtmlReport(scan) {
       problem: ins ? ins.roast : fg.primary.finding,
       action: ins ? ins.fix : '',
       evidence: fg.primary.finding,
-      // primary reference — resolves the matching card inside the category's
-      // focused view for the deep-link anchor (owner 2026-10-07).
-      primary: fg.primary,
     });
   }
   fixItems.sort((a, b) => (Number.isFinite(b.score) ? b.score : 0) - (Number.isFinite(a.score) ? a.score : 0));
@@ -1068,14 +1064,13 @@ export function renderHtmlReport(scan) {
   // Each fix is a COMPACT RANKED SUMMARY (dashboard final cleanup 2026-09-23):
   // rank (CSS counter) + state pill + category chip + a headline naming the
   // CONCRETE PROBLEM (the finding's own trigger line — owner defect 2026-10-07:
-  // items were indistinguishable word-for-word) + ONE-LINE what-to-fix + a
-  // link into the category view — never a repeat of the full Roast / Why /
-  // How To Fix / Receipts (those live once, in the category's focused view).
-  // Rank = real priority order (category severity desc). Links point at the
-  // MATCHING finding card inside its category's focused view
-  // (id="finding-<cat>-<n>", owner 2026-10-07) — with JS the view opens and
-  // scrolls to that card; without JS the hash still resolves to the card's
-  // anchor in the hidden clone-source (see script).
+  // items were indistinguishable word-for-word) + ONE-LINE what-to-fix —
+  // never a repeat of the full Roast / Why / How To Fix / Receipts (those
+  // live once, in the category's focused view). Rank = real priority order
+  // (category severity desc). The matching finding card keeps its
+  // id="finding-<cat>-<n>" anchor for the focused-view JS scroll, but the fix
+  // items render no links (owner 2026-10-12 — the jump read as a round trip
+  // back to the top).
   const fixLis = fixItemsTop5
     .map((it) => {
       // Headline = the finding's own title line (the concrete trigger, e.g.
@@ -1085,31 +1080,25 @@ export function renderHtmlReport(scan) {
       // truncated at 160 so the problem reads whole (owner defect: cuts were
       // landing mid-sentence).
       const problem = short(String(it.evidence !== '' ? it.evidence : it.problem), 160);
-      const summary = it.action
-        ? short(String(it.action), 120)
-        : 'See the full finding for the concrete fix.';
-      // Deep link into the MATCHING finding inside its category's focused
-      // view (owner 2026-10-07): anchor by category + within-category ordinal
-      // (the id="finding-<cat>-<n>" on the card in the hidden clone-source,
-      // which the view clones verbatim). Resolution via object identity — the
-      // flat group's primary IS the category group's primary (same reference,
-      // groupAcrossCategories). Fallback to the category anchor if the card
-      // can't be resolved (never dead-ends).
-      const gCat = classified.find((c) => c.key === it.key);
-      const withinIdx = gCat ? gCat.groups.findIndex((grp) => grp.primary === it.primary) : -1;
-      const deep = withinIdx >= 0
-        ? `finding-${it.key.toLowerCase()}-${withinIdx + 1}`
-        : `cat-${it.key.toLowerCase()}`;
+      const summary = it.action ? short(String(it.action), 120) : '';
+      // The old "See the full finding for the concrete fix." stand-in is gone
+      // (owner 2026-10-12): it promised a navigation that no longer exists —
+      // a fix item with no stored action omits the action line instead, never
+      // a dangling link or label. The deep-link resolution died with the
+      // fix-link; the finding-card anchors stay for the focused-view JS scroll
+      // (owner 2026-10-07).
+      const actionLine = summary === ''
+        ? ''
+        : `<p class="fix-action">
+      <span class="fix-action-label">Fix it:</span> ${esc(summary)}
+    </p>`;
       return `\n  <li class="fix-item fix-${statusClass(it.cls)}">
     <div class="fix-top">
       <span class="fix-cat">${esc(it.label)}</span>
       <span class="fix-pill">${esc(it.cls)}</span>
     </div>
     <p class="fix-problem">${esc(problem)}</p>
-    <p class="fix-action">
-      <span class="fix-action-label">Fix it:</span> ${esc(summary)}
-    </p>
-    <a class="fix-link" href="#${deep}">See the full finding →</a>
+    ${actionLine}
   </li>`;
     })
     .join('');
@@ -1223,7 +1212,7 @@ export function renderHtmlReport(scan) {
    The dashboard stays fully present; a #cat-<key> hash shows that category's
    focused view. The view's .cat-view-body is filled by CLONING the dashboard's
    own cat-<key> section (same finding cards / measurements, no regeneration).
-   A #finding-<cat>-<n> hash (the fix-first "See the full finding" targets)
+   A #finding-<cat>-<n> hash (the finding-card anchors, owner 2026-10-07)
    opens that category's view AND scrolls to the matching finding card.
    Unknown or empty hash = dashboard. With JS off, the report is simply the
    dashboard and the cards' native hash anchors scroll as in Phase 2A. */
@@ -1382,9 +1371,9 @@ export function renderHtmlReport(scan) {
     .hero-gauge-fill { display: block; height: 100%; border-radius: 999px; background: var(--band, #f87171); }
     .hero-scale { color: var(--ink-faint); font-size: .72rem; letter-spacing: .16em; text-transform: uppercase; margin: .9rem 0 0; }
     /* the "Why this score?" explainer (Job 1B 2026-10-12): compact, muted,
-       inside the hero under the scale caption; mirrors the fc-receipts details
-       pattern (summary pill -> bordered body). The hero number/verdict/gauge
-       above are untouched — this block only adds optional reading below. */
+       inside the hero under the scale caption; a disclosure (summary pill ->
+       bordered body) separate from the finding cards. The hero number/verdict/
+       gauge above are untouched — this block only adds optional reading. */
     .score-explain { max-width: 560px; margin: 1.15rem auto 0; text-align: left; }
     .score-explain > summary { display: inline-flex; align-items: center; gap: .5rem; cursor: pointer; list-style: none; user-select: none; color: var(--ink-faint); font-size: .76rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; border: 1px solid var(--line-strong); border-radius: 999px; padding: .5rem 1.1rem; background: var(--surface-2); transition: border-color .15s ease, color .15s ease, background-color .15s ease; }
     .score-explain > summary:hover, .score-explain > summary:focus-visible { border-color: var(--ass); color: var(--ink); background: var(--surface); }
@@ -1492,8 +1481,8 @@ export function renderHtmlReport(scan) {
     .cat-empty { color: var(--ink-faint); font-size: .9rem; margin: .4rem 0 .5rem; font-style: italic; }
     /* --- Phase 2B finding cards: premium paid-audit cards, one per negative
        finding, four labeled zones. The ROAST is the loudest block (band-tinted
-       evidence panel); the receipts drawer is a clear, bordered control with a
-       real line count; receipts render like terminal transcripts. --- */
+       evidence panel); the receipts block is always visible with a real line
+       count; receipts render like terminal transcripts. --- */
     .finding-card { border: 1px solid var(--line); border-left: 4px solid var(--fc, #f87171); border-radius: 16px; padding: 1.15rem 1.25rem 1.05rem; margin: 1.15rem 0; background: var(--surface); overflow-wrap: break-word; word-break: break-word; }
     .finding-card + .finding-card { margin-top: 1.5rem; }
     .cat-detail-watch .finding-card { --fc: #facc15; }
@@ -1516,15 +1505,12 @@ export function renderHtmlReport(scan) {
     .fc-why, .fc-fix { max-width: 78ch; border-top: 1px solid var(--line); padding-top: .9rem; line-height: 1.65; color: var(--ink-dim); font-size: .93rem; }
     .fc-why .ins-why, .fc-fix .ins-fix { display: block; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; font-size: .66rem; color: var(--ink-faint); margin: 0 0 .3rem; }
     .fc-fix { border-left: 3px solid var(--ass); padding-left: .9rem; background: rgba(212,240,0,.03); }
-    /* the receipts drawer: an obvious evidence control, not a footnote */
+    /* the receipts block: evidence always visible — a static section header +
+       line count, no toggle (owner 2026-10-12) */
     .fc-receipts { margin-top: .25rem; border-top: 1px dashed var(--line); padding-top: .95rem; }
-    .fc-receipts summary { display: flex; align-items: center; gap: .6rem; cursor: pointer; color: var(--ink-dim); font-weight: 700; font-size: .85rem; list-style: none; user-select: none; border: 1px solid var(--line-strong); border-radius: 10px; padding: .6rem .85rem; background: var(--surface-2); transition: border-color .15s ease, color .15s ease, background-color .15s ease; }
-    .fc-receipts summary:hover, .fc-receipts summary:focus-visible { border-color: var(--ass); color: var(--ink); background: var(--surface); }
-    .fc-receipts summary:focus-visible { outline: 2px solid var(--ass); outline-offset: 2px; }
-    .fc-receipts summary::-webkit-details-marker { display: none; }
-    .fc-receipts summary::before { content: "▸"; color: var(--ass); font-size: .85rem; line-height: 1; }
-    .fc-receipts[open] summary::before { content: "▾"; }
-    .rec-count { margin-left: auto; font-size: .64rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--ass); background: rgba(212,240,0,.1); border: 1px solid rgba(212,240,0,.28); padding: .16rem .6rem; border-radius: 999px; }
+    .fc-receipts-head { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; }
+    .fc-receipts .rec-label { color: var(--ink-faint); font-family: var(--font-sans); font-size: .68rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    .rec-count { margin-left: auto; font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); }
     .fc-receipts ul { margin: .7rem 0 0; padding: .85rem 1rem; list-style: none; background: #0d0d0f; border: 1px solid var(--line); border-left: 3px solid var(--fc, #f87171); border-radius: 10px; }
     .fc-receipts li { margin: 0; font-family: var(--mono); font-size: .86rem; color: #cfcfd8; line-height: 1.6; overflow-wrap: anywhere; }
     .fc-receipts .rec-label { color: var(--ink-faint); font-family: var(--font-sans); }
@@ -1571,9 +1557,6 @@ export function renderHtmlReport(scan) {
     .fix-action-label { display: block; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; font-size: .64rem; color: var(--ass); margin-bottom: .2rem; }
     .fix-evidence { margin: .3rem 0 .6rem; font-size: .82rem; color: var(--ink-faint); }
     .fix-evidence em { font-family: var(--mono); font-size: .78rem; color: #c9c9d1; font-style: normal; overflow-wrap: anywhere; }
-    .fix-link { font-size: .8rem; font-weight: 800; color: var(--ass); text-decoration: none; border-bottom: 1px dotted rgba(212,240,0,.55); }
-    .fix-link:hover { border-bottom-style: solid; }
-    .fix-link:focus-visible { outline: 2px solid var(--ass); outline-offset: 2px; border-radius: 2px; }
     /* --- Closing verdict callout (band-tinted) --- */
     .final-note { margin: .4rem 0 0; padding: .95rem 1.1rem; border: 1px solid var(--line); border-left: 4px solid var(--band, #f87171); border-radius: 12px; background: rgba(255,255,255,.03); font-size: 1.03rem; line-height: 1.6; max-width: 78ch; }
     /* --- Closing-verdict analyst: the approved donkey-dashboard cutout as the
@@ -1637,7 +1620,6 @@ export function renderHtmlReport(scan) {
       .fix-item::before { left: .85rem; }
       .meta { font-size: .8rem; }
       .finding-card { padding: 1rem .95rem .95rem; }
-      .fc-receipts summary { flex-wrap: wrap; }
       .rec-count { margin-left: 0; }
     }
     /* --- Print: receipts and the whole report stay legible on paper --- */
