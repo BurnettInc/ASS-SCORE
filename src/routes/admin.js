@@ -34,7 +34,8 @@ import { renderHtmlReport, breakdownFor } from '../reportHtml.js';
  *     ua, path, ref} x latest 50] }, sources: { total, top: [{source, count}
  *     x10] }, bots: { total, today, last30d: [{date, count} x30], recent:
  *     [{ts, ip, ua, path, ref, reason} x latest 20] }, scans: { total, today,
- *     last30d: x30 }, purchases: { total, today, last30d: x30 } }
+ *     last30d: x30, recent: [{id, url, score, created_at} x latest 20] },
+ *     purchases: { total, today, last30d: x30 } }
  * (the JSON shape is additive — views/scans/purchases untouched; the HTML page
  * is a rendering of that object)
  *
@@ -179,6 +180,31 @@ function renderAdminPage(stats, generatedAt, opts = {}) {
       </table></div>`
     : `<div class="empty">No bot hits recorded yet. Views here are the humans-only ledger.</div>`;
 
+  // Recent scans (owner 2026-10-16): the last 20 PUBLIC scans, newest first.
+  // Timestamp is the row's UTC created_at (the same slice(0,16) convention as
+  // the "Tracking since" epoch line); long URLs truncate in the cell with the
+  // full value in the title attribute; the verdict comes from the SAME
+  // src/verdict.js band the public score page renders (verdictLabel), colored
+  // with the band accent. NO report links here by design — public report
+  // links are token-protected, and /admin/report/:scanId serves internal
+  // (admin-tool) rows only.
+  const scanRows = scans.recent
+    .map(
+      (s) => `<tr>
+        <td class="col-time">${esc(s.created_at.slice(0, 16).replace('T', ' '))} UTC</td>
+        <td class="col-url" title="${esc(s.url)}">${esc(truncate(s.url, 80))}</td>
+        <td class="col-score">${esc(String(s.score))}</td>
+        <td class="col-verdict" style="color:${scoreColor(s.score)}">${esc(verdictLabel(s.score))}</td>
+      </tr>`
+    )
+    .join('');
+  const scansTable = scans.recent.length > 0
+    ? `<div class="tablewrap"><table>
+        <thead><tr><th>Time (UTC)</th><th>URL</th><th>Score</th><th>Verdict</th></tr></thead>
+        <tbody>${scanRows}</tbody>
+      </table></div>`
+    : `<div class="empty">No scans yet — they'll appear here as visitors run them.</div>`;
+
   const empty = `<div class="empty">No views recorded yet. Once the site beacon starts receiving hits, they'll show up here.</div>`;
   const chartBlock = hasViews ? `<div class="chart">${chartCells}</div>` : empty;
   const tableBlock = hasViews
@@ -243,6 +269,9 @@ tr:hover td{background:${'#1a2336'}}
 .col-path{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--lime);max-width:340px;overflow:hidden;text-overflow:ellipsis}
 .col-ua{color:var(--muted);max-width:280px;overflow:hidden;text-overflow:ellipsis}
 .col-reason{color:var(--yellow);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.col-url{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--lime);max-width:340px;overflow:hidden;text-overflow:ellipsis}
+.col-score{color:var(--text);font-weight:800}
+.col-verdict{font-weight:800;letter-spacing:.02em;white-space:nowrap}
 .sources{display:flex;flex-direction:column;gap:10px}
 .src-scale{color:var(--muted);font-size:11px;margin-bottom:2px}
 .source{display:flex;flex-direction:column;gap:3px}
@@ -283,6 +312,10 @@ footer{margin-top:28px;color:${'#5b6b84'};font-size:12px;text-align:center;lette
     <h2>Last 30 days</h2>
     <div class="legend"><span class="sw sw-scans"></span>Scans&nbsp;<span class="sw sw-views"></span>Views&nbsp;<span class="sw sw-reports"></span>Reports&nbsp;<span class="sw sw-bots"></span>Bots blocked</div>
     ${chartBlock}
+  </section>
+  <section class="card">
+    <h2>Recent scans <span class="gen">(${scans.recent.length} — visitors' scans, newest first; admin tool excluded)</span></h2>
+    ${scansTable}
   </section>
   <section class="card">
     <h2>Top referrers <span class="gen">(last 30 days — where traffic comes from)</span></h2>
@@ -544,6 +577,9 @@ export function adminRouter({ db, adminPassword, emailSender, now = () => new Da
         total: db.countScansTotal(epochIso),
         today: db.countScansToday(today, epochIso),
         last30d: last30dScans,
+        // Latest 20 PUBLIC scans, newest first, at/after the epoch floor
+        // (null epoch = all time). Internal admin-tool rows never appear.
+        recent: db.recentScans(epochIso),
       },
       purchases: {
         total: db.countWebhooksTotal(epochIso),

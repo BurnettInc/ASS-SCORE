@@ -300,6 +300,16 @@ export function openDb(dbPath) {
   const scanDayCountsStmt = db.prepare(
     'SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n FROM scans WHERE COALESCE(internal,0) = 0 AND created_at >= ? GROUP BY day'
   );
+  // Admin "Recent scans" list — mirror of the recentPageViews/recentBotHits
+  // family, but on the scans ledger and with the SAME internal-row exclusion
+  // the scan counters use (admin share-card tool runs must never appear).
+  // `sinceIso` is the stats-epoch floor (created_at ISO string), null = all time.
+  const recentScansStmt = db.prepare(
+    'SELECT id, url, score, created_at FROM scans WHERE COALESCE(internal,0) = 0 ORDER BY created_at DESC LIMIT 20'
+  );
+  const recentScansSinceStmt = db.prepare(
+    'SELECT id, url, score, created_at FROM scans WHERE COALESCE(internal,0) = 0 AND created_at >= ? ORDER BY created_at DESC LIMIT 20'
+  );
 
   const insertWebhookEventStmt = db.prepare(
     'INSERT OR IGNORE INTO webhook_events (event_key, provider, event_id, ip, day, scan_id, status, business_name, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
@@ -602,6 +612,17 @@ export function openDb(dbPath) {
     /** Per-UTC-day scan counts with created_at >= sinceIso: [{ date, count }]. */
     scanDayCounts(sinceIso) {
       return scanDayCountsStmt.all(sinceIso).map((r) => ({ date: r.day, count: r.n }));
+    },
+    /**
+     * Latest 20 PUBLIC scans, newest first; with `sinceIso` (stats-epoch floor,
+     * ISO string) only rows created at/after it. Admin-generated (internal)
+     * rows are ALWAYS excluded — the same COALESCE(internal,0) = 0 filter the
+     * scan counters use, so the share-card tool never shows up here.
+     * @returns {Array<{ id: string, url: string, score: number, created_at: string }>}
+     */
+    recentScans(sinceIso = null) {
+      const rows = sinceIso === null ? recentScansStmt.all() : recentScansSinceStmt.all(sinceIso);
+      return rows.map((r) => ({ id: r.id, url: r.url, score: r.score, created_at: r.created_at }));
     },
     // --- Admin share-card tool audit trail (owner 2026-10-01) -----------------
     /**
