@@ -10,6 +10,7 @@ import { ordersRouter } from './routes/orders.js';
 import { trackRouter } from './routes/track.js';
 import { adminRouter } from './routes/admin.js';
 import { createEmailSender } from './email.js';
+import { createOwnerAlertSender } from './ownerAlert.js';
 import { reportSecret } from './paywall.js';
 import { createCors } from './cors.js';
 import { runRetention } from './retention.js';
@@ -81,7 +82,7 @@ const defaultCheckTarget = async (raw) => {
  * src/clientIp.js; without trust proxy, Express ignores X-Forwarded-For and
  * every request would look like the LB's IP, collapsing the per-IP caps.
  */
-export function createApp({ dbPath = './data/ass-score.db', fetcher, webhookDeliverer, emailSender, scanBudgetMs, publicBaseUrl = process.env.PUBLIC_BASE_URL || 'https://www.ass-score.com', now, maxWebhooksPerDay, maxScansPerDay, validateTarget, allowedOrigins, reportTokenSecret, reportBaseUrl, adminPassword, stripeWebhookSecret, stripe, stripeSecretKey, stripePriceId, runRetentionOnBoot = false } = {}) {
+export function createApp({ dbPath = './data/ass-score.db', fetcher, webhookDeliverer, emailSender, ownerAlertSender, scanBudgetMs, publicBaseUrl = process.env.PUBLIC_BASE_URL || 'https://www.ass-score.com', now, maxWebhooksPerDay, maxScansPerDay, validateTarget, allowedOrigins, reportTokenSecret, reportBaseUrl, adminPassword, stripeWebhookSecret, stripe, stripeSecretKey, stripePriceId, runRetentionOnBoot = false } = {}) {
   const db = openDb(dbPath);
   const fetcherImpl = fetcher ?? new Fetcher();
   // PAYWALL secret: env REPORT_TOKEN_SECRET, or random per-boot (fail closed —
@@ -89,6 +90,10 @@ export function createApp({ dbPath = './data/ass-score.db', fetcher, webhookDeli
   const secret = reportTokenSecret ?? reportSecret(process.env);
   const reportLinkBase = reportBaseUrl ?? process.env.REPORT_BASE_URL ?? publicBaseUrl;
   const emailSenderImpl = emailSender ?? createEmailSender({ publicBaseUrl, reportTokenSecret: secret, reportBaseUrl: reportLinkBase });
+  // Owner sales alert (owner request 2026-10-15): env-gated on OWNER_EMAIL —
+  // when unset createOwnerAlertSender returns a silent no-op, so a deploy that
+  // has not set the env var simply sends nothing (never crashes a checkout).
+  const ownerAlertSenderImpl = ownerAlertSender ?? createOwnerAlertSender({ publicBaseUrl, reportTokenSecret: secret });
   const nowImpl = now ?? (() => new Date().toISOString());
   const rawMaxWebhooks = maxWebhooksPerDay ?? process.env.MAX_WEBHOOKS_PER_DAY;
   const webhookCap = Number.isFinite(Number(rawMaxWebhooks)) ? Math.max(0, Number(rawMaxWebhooks)) : 10;
@@ -130,6 +135,7 @@ export function createApp({ dbPath = './data/ass-score.db', fetcher, webhookDeli
     maxWebhooksPerDay: webhookCap,
     validateTarget: checkTarget,
     stripeWebhookSecret,
+    ownerAlertSender: ownerAlertSenderImpl,
   }));
   // Paid-order checkout — full-Stripe flow (owner-approved 2026-09-25):
   // order-intent creates a per-order Checkout Session, /orders/:orderId is
@@ -153,6 +159,7 @@ export function createApp({ dbPath = './data/ass-score.db', fetcher, webhookDeli
     reportTokenSecret: secret,
     reportBaseUrl: reportLinkBase,
     emailSender: emailSenderImpl,
+    ownerAlertSender: ownerAlertSenderImpl,
   }));
   app.use(scansRouter({ db, publicBaseUrl, reportTokenSecret: secret, reportBaseUrl: reportLinkBase, now: nowImpl }));
   // Homepage view tracking + private admin stats (backlog db64a1c9 — owner

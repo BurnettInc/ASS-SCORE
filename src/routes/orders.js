@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { createReportToken, buildReportUrl } from '../paywall.js';
 import { toPublicScan } from '../serialize.js';
+import { createOwnerAlertSender } from '../ownerAlert.js';
 import { createStripeClient } from '../stripeClient.js';
 import { configMissing, stripeFailure } from './orderIntent.js';
 /**
@@ -49,10 +50,14 @@ export function ordersRouter({
   reportTokenSecret,
   reportBaseUrl,
   emailSender,
+  ownerAlertSender = null,
 } = {}) {
   const r = Router();
   const apiKey = String(stripeSecretKey ?? process.env.STRIPE_SECRET_KEY ?? '').trim();
   const stripeImpl = stripe ?? createStripeClient({ apiKey });
+  // Owner sales alert (owner request 2026-10-15): env-gated (OWNER_EMAIL) —
+  // when unset the default sender is a silent no-op, never a crash.
+  const sendOwnerAlert = ownerAlertSender ?? createOwnerAlertSender();
   /** The token'd full-report URL for an order's scan (needs no scan row). */
   const reportUrlFor = (order) =>
     buildReportUrl(reportBaseUrl, order.scan_id, createReportToken(reportTokenSecret, order.scan_id));
@@ -105,6 +110,25 @@ export function ordersRouter({
     const flipped = db.markOrderFulfilled(order.id, { checkoutSessionId: sessionId, paidAt: now() });
     if (flipped) {
       await deliverReport(order); // best-effort; fulfillment never waits on email
+      // Owner alert — AFTER the report exists, on the FIRST fulfillment only
+      // (the flip above is race-safe, so the webhook and a late verify can
+      // never both fire it). Best-effort, soft-fail: a throw here must never
+      // break the fulfilled response. Amount comes from the REAL Stripe
+      // session fetched above (smallest currency unit — formatted by the
+      // sender); the report link is the same token'd URL the customer got.
+      const scan = db.getScan(order.scan_id);
+      if (scan) {
+        try {
+          await sendOwnerAlert({
+            scan: toPublicScan(scan),
+            amountMinor: session.amount_total,
+            currency: session.currency,
+            customerEmail: order.email,
+          });
+        } catch (err) {
+          console.error(`[orders] owner alert for order ${order.id} crashed:`, err?.message ?? err);
+        }
+      }
     } else {
       const fresh = db.getOrder(order.id);
       if (fresh?.status !== 'fulfilled') {

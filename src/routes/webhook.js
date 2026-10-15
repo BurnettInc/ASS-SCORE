@@ -4,6 +4,7 @@ import { validateUrl, resolveAndCheck, SsrfError, InvalidUrlError } from '../fet
 import { normalizeOrder, extractStripeSession } from '../orderNormalizer.js';
 import { verifyStripeSignature } from '../stripeSignature.js';
 import { validateEmail } from '../email.js';
+import { createOwnerAlertSender } from '../ownerAlert.js';
 import { runScan, SCAN_BUDGET_MS } from '../scan.js';
 import { toPublicScan } from '../serialize.js';
 import { clientIp } from '../clientIp.js';
@@ -59,6 +60,7 @@ export function webhookRouter({
   db,
   fetcher,
   emailSender,
+  ownerAlertSender = null,
   now = () => new Date().toISOString(),
   scanBudgetMs = SCAN_BUDGET_MS,
   maxWebhooksPerDay = 10,
@@ -81,6 +83,11 @@ export function webhookRouter({
     if (typeof logger.error === 'function') logger.error(...args);
     else console.error(...args);
   };
+
+  // Owner sales alert (owner request 2026-10-15): env-gated (OWNER_EMAIL) —
+  // when unset the default sender is a silent no-op, so a router constructed
+  // without an injected sender can never crash or email anyone by accident.
+  const sendOwnerAlert = ownerAlertSender ?? createOwnerAlertSender();
 
   if (!stripeWebhookSecret) {
     const warn = typeof logger.warn === 'function' ? logger.warn.bind(logger) : console.warn.bind(console);
@@ -164,12 +171,31 @@ export function webhookRouter({
     let emailDeliveredTo = null;
     if (!scan) {
       logError(`[webhook] order ${order.id}: scan ${order.scan_id} no longer exists — report email NOT sent`);
-    } else if (emailSender) {
+    } else {
+      if (emailSender) {
+        try {
+          await emailSender(toPublicScan(scan), order.email);
+          emailDeliveredTo = order.email;
+        } catch (err) {
+          logError(`[webhook] email to ${order.email} for order ${order.id} crashed:`, err?.message ?? err);
+        }
+      }
+      // 3b. Owner alert — AFTER the report exists (token'd link), so it fires
+      //     once per completed paid report: the flip above is race-safe
+      //     (only the FIRST fulfillment reaches here; Stripe retries replay
+      //     as already_fulfilled). Best-effort, soft-fail: a throw (or a
+      //     broken sender) must never block the fulfilled response or the
+      //     customer email above. Amount comes from the real Stripe session
+      //     (smallest currency unit — formatted by the sender).
       try {
-        await emailSender(toPublicScan(scan), order.email);
-        emailDeliveredTo = order.email;
+        await sendOwnerAlert({
+          scan: toPublicScan(scan),
+          amountMinor: session.amount_total,
+          currency: session.currency,
+          customerEmail: order.email,
+        });
       } catch (err) {
-        logError(`[webhook] email to ${order.email} for order ${order.id} crashed:`, err?.message ?? err);
+        logError(`[webhook] owner alert for order ${order.id} crashed:`, err?.message ?? err);
       }
     }
 
