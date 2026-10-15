@@ -120,11 +120,17 @@ function renderAdminPage(stats, generatedAt, opts = {}) {
       ? ''
       : '<div class="reset-note">Opened with header auth — to use the reset button, open this page with <code>?pw=…</code> appended.</div>';
 
-  // Normalize each series to its own max; min 1px so zero days show a hairline.
-  const scanMax = Math.max(0, ...scans.last30d.map((d) => d.count));
-  const viewMax = Math.max(0, ...views.last30d.map((d) => d.count));
-  const purchaseMax = Math.max(0, ...purchases.last30d.map((d) => d.count));
-  const botMax = Math.max(0, ...bots.last30d.map((d) => d.count));
+  // ONE shared max across all four series (owner 10-15): per-series maxes made
+  // 14 scans and 25 views render equal-height bars (each hit 100% of its own
+  // scale) — cross-metric heights are only comparable on a shared scale, and
+  // reports/bots near zero should show as honest hairlines, not full bars.
+  const chartMax = Math.max(
+    0,
+    ...scans.last30d.map((d) => d.count),
+    ...views.last30d.map((d) => d.count),
+    ...purchases.last30d.map((d) => d.count),
+    ...bots.last30d.map((d) => d.count),
+  );
   const barHeight = (count, max) => (max > 0 ? Math.max(1, Math.round((count / max) * CHART_HEIGHT_PX)) : 1);
 
   const chartCells = scans.last30d
@@ -136,10 +142,10 @@ function renderAdminPage(stats, generatedAt, opts = {}) {
       return [
         `<div class="day" title="${esc(`${scanDay.date} — scans ${scanDay.count}, views ${viewDay.count}, reports ${purchaseDay.count}, bots ${botDay.count}`)}">`,
         `<div class="bars">`,
-        `<div class="bar bar-scans" style="height:${barHeight(scanDay.count, scanMax)}px" title="${esc(`${scanDay.date} · ${scanDay.count} scans`)}"></div>`,
-        `<div class="bar bar-views" style="height:${barHeight(viewDay.count, viewMax)}px" title="${esc(`${viewDay.date} · ${viewDay.count} views`)}"></div>`,
-        `<div class="bar bar-reports" style="height:${barHeight(purchaseDay.count, purchaseMax)}px" title="${esc(`${purchaseDay.date} · ${purchaseDay.count} reports`)}"></div>`,
-        `<div class="bar bar-bots" style="height:${barHeight(botDay.count, botMax)}px" title="${esc(`${botDay.date} · ${botDay.count} bots blocked`)}"></div>`,
+        `<div class="bar bar-scans" style="height:${barHeight(scanDay.count, chartMax)}px" title="${esc(`${scanDay.date} · ${scanDay.count} scans`)}"></div>`,
+        `<div class="bar bar-views" style="height:${barHeight(viewDay.count, chartMax)}px" title="${esc(`${viewDay.date} · ${viewDay.count} views`)}"></div>`,
+        `<div class="bar bar-reports" style="height:${barHeight(purchaseDay.count, chartMax)}px" title="${esc(`${purchaseDay.date} · ${purchaseDay.count} reports`)}"></div>`,
+        `<div class="bar bar-bots" style="height:${barHeight(botDay.count, chartMax)}px" title="${esc(`${botDay.date} · ${botDay.count} bots blocked`)}"></div>`,
         `</div>`,
         tick,
         `</div>`,
