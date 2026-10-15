@@ -298,6 +298,17 @@ export function openDb(dbPath) {
   const pageViewRefCountsStmt = db.prepare(
     'SELECT ref, COUNT(*) AS n FROM page_views WHERE ts >= ? GROUP BY ref ORDER BY n DESC'
   );
+  // Admin "Direct traffic by app/device" aggregation (owner 2026-10-15):
+  // per-UA counts of DIRECT views (ref = '') in the floor window, descending.
+  // The route classifies each stored ua through src/uaApp.js into an
+  // app/device bucket — the same ref='' window as the 'direct' source bucket,
+  // so the bucket sum == the top-'direct' count by construction. No schema
+  // change: the ua column already exists and is populated for every view
+  // (the track route has always stored it), so the breakdown applies
+  // retroactively to all recorded views.
+  const pageViewDirectUasStmt = db.prepare(
+    "SELECT ua, COUNT(*) AS n FROM page_views WHERE ts >= ? AND ref = '' GROUP BY ua ORDER BY n DESC"
+  );
   const recentPageViewsStmt = db.prepare('SELECT ts, ip, ua, path, ref FROM page_views ORDER BY ts DESC LIMIT 50');
   const recentPageViewsSinceStmt = db.prepare(
     'SELECT ts, ip, ua, path, ref FROM page_views WHERE ts >= ? ORDER BY ts DESC LIMIT 50'
@@ -624,6 +635,17 @@ export function openDb(dbPath) {
      */
     pageViewSources(sinceTs) {
       return pageViewRefCountsStmt.all(sinceTs).map((r) => ({ ref: r.ref, count: r.n }));
+    },
+    /**
+     * Per-UA counts of DIRECT page views (ref = '') with ts >= sinceTs,
+     * descending: [{ ua, count }]. The admin route classifies every ua into
+     * an app/device bucket via src/uaApp.js. Only ref='' rows — a view that
+     * carried a referrer is never part of the direct breakdown, so the sum of
+     * the buckets equals the route's 'direct' source count exactly (same
+     * window: ts >= the same viewFloorTs).
+     */
+    pageViewDirectUas(sinceTs) {
+      return pageViewDirectUasStmt.all(sinceTs).map((r) => ({ ua: r.ua, count: r.n }));
     },
     /** Latest 50 page views, newest first; with `sinceTs` only rows at/after it. */
     recentPageViews(sinceTs = null) {

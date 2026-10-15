@@ -8,6 +8,7 @@ import { validateUrl, resolveAndCheck, SsrfError, InvalidUrlError } from '../fet
 import { verdictLabel, scoreColor } from '../verdict.js';
 import { buildCardSvg, renderCardPng } from '../card.js';
 import { renderHtmlReport, breakdownFor } from '../reportHtml.js';
+import { classifyApp, LABELS } from '../uaApp.js';
 
 /**
  * Private admin stats page — GET /admin/stats (backend origin only, NOT under
@@ -32,11 +33,12 @@ import { renderHtmlReport, breakdownFor } from '../reportHtml.js';
  * Response (200, password correct):
  *   { views: { total, today, last30d: [{date, count} x30], recent: [{ts, ip,
  *     ua, path, ref} x latest 50] }, sources: { total, top: [{source, count}
- *     x10] }, bots: { total, today, last30d: [{date, count} x30], recent:
- *     [{ts, ip, ua, path, ref, reason} x latest 20] }, scans: { total, today,
- *     last30d: x30, recent: [{id, url, score, created_at} x latest 20] },
- *     purchases: { total, today, last30d: x30 }, cards: { total, today,
- *     last30d: x30, recent: [{ts, scan_id, url, action} x latest 20], actions:
+ *     x10], direct_total, direct_by_app: [{app, label, count}] }, bots: {
+ *     total, today, last30d: [{date, count} x30], recent: [{ts, ip, ua, path,
+ *     ref, reason} x latest 20] }, scans: { total, today, last30d: x30,
+ *     recent: [{id, url, score, created_at} x latest 20] }, purchases: {
+ *     total, today, last30d: x30 }, cards: { total, today, last30d: x30,
+ *     recent: [{ts, scan_id, url, action} x latest 20], actions:
  *     { downloads, shares } } }
  * (the JSON shape is additive — views/scans/purchases untouched; the HTML page
  * is a rendering of that object)
@@ -46,6 +48,15 @@ import { renderHtmlReport, breakdownFor } from '../reportHtml.js';
  * aggregated per referrer HOSTNAME — ref === '' is bucketed as 'direct';
  * leading www. is stripped. `top` is the top 10 {source, count} sorted
  * descending, `total` is the whole window's view count.
+ *
+ * `sources.direct_by_app` (owner 2026-10-15) answers "which app/device did
+ * the direct traffic come from": every ref === '' view's stored UA is run
+ * through the deterministic src/uaApp.js classifier and aggregated per app
+ * bucket — [{ app, label, count }] sorted descending (tie-break: app key
+ * descending, so equal-count buckets render in a fixed order). `direct_total`
+ * is the sum of the buckets and equals the 'direct' entry's count in `top`
+ * by construction (both aggregate the same ref='' rows over the same floor);
+ * when there is no direct traffic both are zero / empty.
  *
  * `bots` (owner 2026-10-10) answers "prove it's not a bot": every hit the
  * track route DROPPED (empty UA / webdriver / known-bot UA / per-IP 30s
@@ -149,12 +160,24 @@ function renderAdminPage(stats, generatedAt, opts = {}) {
 
   // Top Referrers (owner 2026-10-10): sources.total is the whole window, so
   // every bar's width is count/total (round half up, min 1% when nonzero).
+  // Under the 'direct' row (owner 2026-10-15) the direct-by-app breakdown
+  // renders as wrap-safe chips (label + count) — nothing extra when there is
+  // no direct traffic (direct_by_app is empty, so the block is skipped).
+  const directChipsFor = (s) =>
+    s.source === 'direct' && sources.direct_by_app.length > 0
+      ? `<div class="src-direct">${sources.direct_by_app
+          .map(
+            (d) => `<span class="src-chip" title="${esc(`${d.label} — ${d.count} direct view${d.count === 1 ? '' : 's'}`)}">${esc(d.label)}<span class="src-chip-n">${esc(String(d.count))}</span></span>`
+          )
+          .join('')}</div>`
+      : '';
   const sourceRows = sources.top
     .map((s) => {
       const pct = sources.total > 0 ? Math.max(s.count > 0 ? 1 : 0, Math.round((s.count / sources.total) * 100)) : 0;
       return `<div class="source">
         <div class="src-line"><span class="src-name" title="${esc(s.source)}">${esc(s.source)}</span><span class="src-count">${s.count}<span class="src-pct">${pct}%</span></span></div>
         <div class="src-bar"><div class="src-fill" style="width:${pct}%"></div></div>
+        ${directChipsFor(s)}
       </div>`;
     })
     .join('');
@@ -309,6 +332,9 @@ tr:hover td{background:${'#1a2336'}}
 .src-pct{color:var(--muted);font-weight:400;font-size:11px;margin-left:6px;font-variant-numeric:tabular-nums}
 .src-bar{height:6px;border-radius:3px;background:${'#1c2436'};overflow:hidden}
 .src-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--green),var(--lime))}
+.src-direct{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;padding-left:2px}
+.src-chip{display:inline-flex;align-items:center;gap:6px;background:${'#1c2436'};border:1px solid var(--border);border-radius:999px;padding:2px 10px;font-size:11px;color:var(--text);white-space:nowrap}
+.src-chip-n{color:var(--lime);font-weight:800;font-variant-numeric:tabular-nums}
 .empty{color:var(--muted);font-size:13px;padding:26px 8px;text-align:center;border:1px dashed var(--border);border-radius:10px}
 footer{margin-top:28px;color:${'#5b6b84'};font-size:12px;text-align:center;letter-spacing:.04em}
 @media (max-width:640px){.kpis{grid-template-columns:repeat(2,1fr)}.kpi-value{font-size:26px}}
@@ -589,6 +615,21 @@ export function adminRouter({ db, adminPassword, emailSender, now = () => new Da
       sourceBuckets.set(source, (sourceBuckets.get(source) ?? 0) + count);
     }
     if (directCount > 0) sourceBuckets.set('direct', directCount);
+    // Direct traffic by app/device (owner 2026-10-15): 'direct' is often
+    // really no-referrer traffic from inside a mobile app's webview, so every
+    // ref='' view's stored UA is classified through src/uaApp.js (deterministic
+    // string rules, no deps) and aggregated per bucket. Same ref='' rows over
+    // the same viewFloorTs as the 'direct' source bucket, so direct_total ==
+    // the top-'direct' count by construction (asserted in adminSourcesBots).
+    const directUaBuckets = new Map();
+    for (const { ua, count } of db.pageViewDirectUas(viewFloorTs)) {
+      const { app } = classifyApp(ua);
+      directUaBuckets.set(app, (directUaBuckets.get(app) ?? 0) + count);
+    }
+    const directByApp = [...directUaBuckets.entries()]
+      .map(([app, count]) => ({ app, label: LABELS[app] ?? 'Unknown', count }))
+      .sort((a, b) => b.count - a.count || b.app.localeCompare(a.app));
+    const directTotal = directByApp.reduce((n, d) => n + d.count, 0);
     const stats = {
       views: {
         total: db.countPageViews(epochMs),
@@ -602,6 +643,11 @@ export function adminRouter({ db, adminPassword, emailSender, now = () => new Da
           .map(([source, count]) => ({ source, count }))
           .sort((a, b) => b.count - a.count || (a.source < b.source ? -1 : a.source > b.source ? 1 : 0))
           .slice(0, 10),
+        // Direct-traffic app/device breakdown (owner 2026-10-15) — additive:
+        // direct_total is the sum of the buckets, which equals the 'direct'
+        // entry in `top` (both are the same ref='' rows over viewFloorTs).
+        direct_total: directTotal,
+        direct_by_app: directByApp,
       },
       bots: {
         total: db.countBotHitsTotal(epochMs),
