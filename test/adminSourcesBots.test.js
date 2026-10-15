@@ -313,6 +313,73 @@ test('admin: sources aggregates the window by hostname (www. stripped, direct bu
   }
 });
 
+test('admin: sources gains direct_by_app + direct_total — ref=\'\' views classified by stored UA; direct_total == the direct bucket', async () => {
+  const dbp = tmpDb();
+  const app = startApp({ dbPath: dbp, now: () => TICK });
+  try {
+    const X_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Twitter for Android/10.0.1 Mobile Safari/537.36';
+    const SAFARI_IOS_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1';
+    const seed = openDb(dbp);
+    const t = Date.parse(TICK);
+    // ref='' X-app view + ref='' Safari-iOS view + a t.co referral view.
+    seed.insertPageView({ ts: t, ip: '203.0.113.1', ua: X_UA, path: '/', ref: '' });
+    seed.insertPageView({ ts: t, ip: '203.0.113.2', ua: SAFARI_IOS_UA, path: '/', ref: '' });
+    seed.insertPageView({ ts: t, ip: '203.0.113.3', ua: SAFARI_IOS_UA, path: '/', ref: 'https://t.co/abc123' });
+    seed.close();
+    const r = await fetch(`${app.base}/admin/stats`, { headers: { 'x-admin-password': PASSWORD } });
+    assert.equal(r.status, 200);
+    const json = await r.json();
+    // sources.top is byte-identical to before the feature (direct 2 + t.co 1).
+    assert.deepEqual(json.sources.top, [
+      { source: 'direct', count: 2 },
+      { source: 't.co', count: 1 },
+    ]);
+    assert.equal(json.sources.total, 3, 'total unchanged');
+    assert.ok(Array.isArray(json.sources.direct_by_app), 'direct_by_app is an array');
+    assert.equal(json.sources.direct_total, 2, 'direct_total = ref=\'\' views in the window');
+    assert.equal(
+      json.sources.direct_total,
+      json.sources.top.find((s) => s.source === 'direct').count,
+      'direct_total equals the \'direct\' bucket in sources.top by construction',
+    );
+    // Deterministic order: count desc, then app key desc (x before safari-ios).
+    assert.deepEqual(json.sources.direct_by_app, [
+      { app: 'x', label: 'X app', count: 1 },
+      { app: 'safari-ios', label: 'Safari (iPhone)', count: 1 },
+    ]);
+    // Every other stats block is untouched: views/scan/purchase/bot shapes stand.
+    assert.deepEqual(Object.keys(json.views).sort(), ['last30d', 'recent', 'today', 'total']);
+    assert.deepEqual(Object.keys(json.sources).sort(), ['direct_by_app', 'direct_total', 'top', 'total']);
+    assert.equal(json.views.total, 3);
+  } finally {
+    app.server.close();
+  }
+});
+
+test('admin: sources.direct_by_app is empty when there is no direct traffic (referrals only)', async () => {
+  const dbp = tmpDb();
+  const app = startApp({ dbPath: dbp, now: () => TICK });
+  try {
+    const seed = openDb(dbp);
+    const t = Date.parse(TICK);
+    seed.insertPageView({ ts: t, ip: '203.0.113.1', ua: UA, path: '/', ref: 'https://t.co/xyz' });
+    seed.insertPageView({ ts: t, ip: '203.0.113.2', ua: UA, path: '/', ref: 'https://www.google.com/' });
+    seed.close();
+    const json = await (await fetch(`${app.base}/admin/stats`, { headers: { 'x-admin-password': PASSWORD } })).json();
+    assert.equal(json.sources.total, 2);
+    // Tie at 1: the existing route tie-break is source asc, so google.com first.
+    assert.deepEqual(json.sources.top, [
+      { source: 'google.com', count: 1 },
+      { source: 't.co', count: 1 },
+    ]);
+    assert.equal(json.sources.direct_total, 0, 'no direct rows -> zero');
+    assert.deepEqual(json.sources.direct_by_app, [], 'no chips to render');
+    assert.ok(!json.sources.top.some((s) => s.source === 'direct'), 'no direct row when directCount is 0');
+  } finally {
+    app.server.close();
+  }
+});
+
 test('admin: sources + bots respect the stats_epoch floor (pre-epoch rows never counted)', async () => {
   const dbp = tmpDb();
   const app = startApp({ dbPath: dbp, now: () => TICK });
@@ -428,6 +495,59 @@ test('admin: HTML dashboard shows BOTS KPIs, the bots chart series, Top referrer
     assert.equal((html.match(/class="col-reason"/g) || []).length, 3, 'one reason cell per bot row');
     // Path cells appear in BOTH tables: 2 view rows + 3 bot rows.
     assert.equal((html.match(/class="col-path"/g) || []).length, 5);
+  } finally {
+    app.server.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Admin HTML dashboard — direct-by-app chips
+// ---------------------------------------------------------------------------
+test('admin: HTML dashboard renders the direct-by-app chips under the direct source row (labels + counts, wrap-safe)', async () => {
+  const dbp = tmpDb();
+  const app = startApp({ dbPath: dbp, now: () => TICK });
+  try {
+    const X_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Twitter for Android/10.0.1 Mobile Safari/537.36';
+    const SAFARI_IOS_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1';
+    const seed = openDb(dbp);
+    const t = Date.parse(TICK);
+    seed.insertPageView({ ts: t, ip: '203.0.113.1', ua: X_UA, path: '/', ref: '' });
+    seed.insertPageView({ ts: t, ip: '203.0.113.2', ua: SAFARI_IOS_UA, path: '/', ref: '' });
+    seed.insertPageView({ ts: t, ip: '203.0.113.3', ua: SAFARI_IOS_UA, path: '/', ref: 'https://t.co/abc123' });
+    seed.close();
+    const r = await fetch(`${app.base}/admin/stats`, { headers: { accept: 'text/html', 'x-admin-password': PASSWORD } });
+    assert.equal(r.status, 200);
+    const html = await r.text();
+    // The chip block renders under the direct row (markup, not just the CSS).
+    assert.ok(html.includes('<div class="src-direct">'), 'chip container markup present');
+    assert.ok(html.includes('class="src-chip"'), 'chip markup present');
+    assert.ok(html.includes('>X app<span class="src-chip-n">1</span>'), 'X app chip with count');
+    assert.ok(html.includes('>Safari (iPhone)<span class="src-chip-n">1</span>'), 'Safari (iPhone) chip with count');
+    // Wrap-safe styling mirrors the pill-wrap fix (flex-wrap at narrow widths).
+    assert.ok(html.includes('.src-direct{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;padding-left:2px}'), 'chip container wraps');
+    assert.ok(html.includes('.src-chip-n{color:var(--lime);font-weight:800;font-variant-numeric:tabular-nums}'), 'chip count styled');
+    // The direct row itself is unchanged: name, count, % bar.
+    assert.ok(html.includes('title="direct">direct</span><span class="src-count">2'), 'direct row still renders its count');
+    assert.ok(html.includes('src-fill'), '% bar markup present');
+  } finally {
+    app.server.close();
+  }
+});
+
+test('admin: HTML dashboard renders NO chips when direct traffic is absent (referrals only)', async () => {
+  const dbp = tmpDb();
+  const app = startApp({ dbPath: dbp, now: () => TICK });
+  try {
+    const seed = openDb(dbp);
+    const t = Date.parse(TICK);
+    seed.insertPageView({ ts: t, ip: '203.0.113.1', ua: UA, path: '/', ref: 'https://www.google.com/' });
+    seed.close();
+    const r = await fetch(`${app.base}/admin/stats`, { headers: { accept: 'text/html', 'x-admin-password': PASSWORD } });
+    assert.equal(r.status, 200);
+    const html = await r.text();
+    assert.ok(!html.includes('<div class="src-direct">'), 'no chip container markup when there are no direct rows');
+    assert.ok(!html.includes('class="src-chip"'), 'no chips');
+    assert.ok(html.includes('google.com'), 'the referral row still renders');
   } finally {
     app.server.close();
   }
