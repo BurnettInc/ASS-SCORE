@@ -3,7 +3,10 @@
  *
  * Owner-approved (2026-09-23): delete rows older than 30 days from `scans`,
  * `scan_events`, `webhook_events`, and `page_views`, running daily with no
- * manual intervention.
+ * manual intervention. `bot_hits` joined the sweep with the traffic tracker
+ * (2026-10-10), and `card_events` (share-card downloads / share-text copies)
+ * with the share-card tracking KPI (2026-10) — both share page_views'
+ * epoch-ms ts convention, so the identical cutoff applies.
  *
  * PAID-SCAN EXEMPTION (owner-approved 2026-09-28, preserve-data/expire-access):
  * the `scans` purge skips any scan that has an order with status = 'fulfilled'
@@ -52,16 +55,21 @@ export function runRetention({ db, now = () => new Date().toISOString(), maxAgeM
   // bot_hits shares page_views' epoch-ms convention + 30-day retention
   // (privacy page: beacon data — including bot hits — retained up to 30 days).
   const deleteBotHits = conn.prepare('DELETE FROM bot_hits WHERE ts < ?');
+  // card_events (share-card downloads / share-text copies) uses the SAME
+  // epoch-ms convention + 30-day window as the beacon ledgers (privacy page
+  // discloses the same retention for this data).
+  const deleteCardEvents = conn.prepare('DELETE FROM card_events WHERE ts < ?');
 
   const scans = deleteScans.run(cutoffIso).changes;
   const scanEvents = deleteScanEvents.run(cutoffIso).changes;
   const webhookEvents = deleteWebhookEvents.run(cutoffIso).changes;
   const views = deletePageViews.run(cutoffMs).changes;
   const bots = deleteBotHits.run(cutoffMs).changes;
+  const cards = deleteCardEvents.run(cutoffMs).changes;
 
   // Single-line outcome for Railway logs, e.g.
-  // '[retention] cutoff=2026-08-24T12:00:00.000Z scans=12 events=3 webhooks=0 views=41 bots=7'
-  console.log(`[retention] cutoff=${cutoffIso} scans=${scans} events=${scanEvents} webhooks=${webhookEvents} views=${views} bots=${bots}`);
+  // '[retention] cutoff=2026-08-24T12:00:00.000Z scans=12 events=3 webhooks=0 views=41 bots=7 cards=2'
+  console.log(`[retention] cutoff=${cutoffIso} scans=${scans} events=${scanEvents} webhooks=${webhookEvents} views=${views} bots=${bots} cards=${cards}`);
 
-  return { deleted: { scans, scanEvents, webhookEvents, views, bots }, cutoffIso };
+  return { deleted: { scans, scanEvents, webhookEvents, views, bots, cards }, cutoffIso };
 }

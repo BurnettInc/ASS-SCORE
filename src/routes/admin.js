@@ -35,7 +35,9 @@ import { renderHtmlReport, breakdownFor } from '../reportHtml.js';
  *     x10] }, bots: { total, today, last30d: [{date, count} x30], recent:
  *     [{ts, ip, ua, path, ref, reason} x latest 20] }, scans: { total, today,
  *     last30d: x30, recent: [{id, url, score, created_at} x latest 20] },
- *     purchases: { total, today, last30d: x30 } }
+ *     purchases: { total, today, last30d: x30 }, cards: { total, today,
+ *     last30d: x30, recent: [{ts, scan_id, url, action} x latest 20], actions:
+ *     { downloads, shares } } }
  * (the JSON shape is additive — views/scans/purchases untouched; the HTML page
  * is a rendering of that object)
  *
@@ -92,7 +94,7 @@ const truncate = (s, n) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 
 /** Pure-CSS grouped bar chart + cards/tables, fully server-rendered. */
 function renderAdminPage(stats, generatedAt, opts = {}) {
-  const { views, scans, purchases, sources, bots } = stats;
+  const { views, scans, purchases, sources, bots, cards } = stats;
   const hasViews = views.total > 0 || views.recent.length > 0 || views.last30d.some((d) => d.count > 0);
   const hasBots = bots.total > 0 || bots.recent.length > 0 || bots.last30d.some((d) => d.count > 0);
   // EPOCAH CUTOVER (owner 2026-10-07): show the counting floor + the reset
@@ -205,6 +207,27 @@ function renderAdminPage(stats, generatedAt, opts = {}) {
       </table></div>`
     : `<div class="empty">No scans yet — they'll appear here as visitors run them.</div>`;
 
+  // Share-card activity (owner-approved "Share-card download tracking"): the
+  // last 20 counted events (dl-flagged card downloads + prefilled share-text
+  // fetches), newest first, next to the scan the event was about. The URL
+  // comes from the LEFT JOIN inside recentCardEvents — a card downloaded
+  // after its old scan aged past retention shows the scan id instead.
+  const cardRows = cards.recent
+    .map(
+      (c) => `<tr>
+        <td class="col-time">${esc(fmtLocalTime(c.ts))}</td>
+        <td class="col-url" title="${esc(c.url ? c.url : c.scan_id)}">${esc(truncate(c.url ? c.url : c.scan_id, 80))}</td>
+        <td class="col-action ${c.action === 'download' ? 'col-action-dl' : 'col-action-share'}">${esc(c.action)}</td>
+      </tr>`
+    )
+    .join('');
+  const cardsTable = cards.recent.length > 0
+    ? `<div class="tablewrap"><table>
+        <thead><tr><th>Time</th><th>URL</th><th>Action</th></tr></thead>
+        <tbody>${cardRows}</tbody>
+      </table></div>`
+    : `<div class="empty">No share-card activity yet — downloads and share-text copies will show up here.</div>`;
+
   const empty = `<div class="empty">No views recorded yet. Once the site beacon starts receiving hits, they'll show up here.</div>`;
   const chartBlock = hasViews ? `<div class="chart">${chartCells}</div>` : empty;
   const tableBlock = hasViews
@@ -214,9 +237,10 @@ function renderAdminPage(stats, generatedAt, opts = {}) {
       </table></div>`
     : empty;
 
-  const kpi = (label, value, color) => `<div class="kpi">
+  const kpi = (label, value, color, sub = '') => `<div class="kpi">
     <span class="kpi-label">${esc(label)}</span>
     <span class="kpi-value" style="color:${color}">${value}</span>
+    ${sub ? `<span class="kpi-sub">${esc(sub)}</span>` : ''}
   </div>`;
 
   return `<!doctype html>
@@ -247,6 +271,7 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system
 .kpi{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
 .kpi-label{display:block;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.1em}
 .kpi-value{display:block;font-size:34px;font-weight:800;margin-top:4px;font-variant-numeric:tabular-nums}
+.kpi-sub{display:block;color:var(--muted);font-size:11px;font-weight:600;margin-top:2px;letter-spacing:.03em}
 .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px}
 .card h2{margin:0 0 14px;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text)}
 .legend{display:flex;gap:18px;align-items:center;color:var(--muted);font-size:12px;margin-bottom:10px}
@@ -272,6 +297,9 @@ tr:hover td{background:${'#1a2336'}}
 .col-url{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--lime);max-width:340px;overflow:hidden;text-overflow:ellipsis}
 .col-score{color:var(--text);font-weight:800}
 .col-verdict{font-weight:800;letter-spacing:.02em;white-space:nowrap}
+.col-action{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:700;text-transform:uppercase;font-size:12px}
+.col-action-dl{color:var(--lime)}
+.col-action-share{color:var(--yellow)}
 .sources{display:flex;flex-direction:column;gap:10px}
 .src-scale{color:var(--muted);font-size:11px;margin-bottom:2px}
 .source{display:flex;flex-direction:column;gap:3px}
@@ -307,6 +335,7 @@ footer{margin-top:28px;color:${'#5b6b84'};font-size:12px;text-align:center;lette
     ${kpi('BOTS TODAY', bots.today, BANDS.deepOrange)}
     ${kpi('FULL REPORTS PURCHASED', purchases.total, BANDS.red)}
     ${kpi('REPORTS TODAY', purchases.today, BANDS.red)}
+    ${kpi('SHARE CARDS', cards.total, BANDS.lime, `${cards.actions.downloads} downloads · ${cards.actions.shares} shares`)}
   </section>
   <section class="card">
     <h2>Last 30 days</h2>
@@ -316,6 +345,10 @@ footer{margin-top:28px;color:${'#5b6b84'};font-size:12px;text-align:center;lette
   <section class="card">
     <h2>Recent scans <span class="gen">(${scans.recent.length} — visitors' scans, newest first; admin tool excluded)</span></h2>
     ${scansTable}
+  </section>
+  <section class="card">
+    <h2>Share cards <span class="gen">(${cards.recent.length} — downloads + share-text copies, newest first)</span></h2>
+    ${cardsTable}
   </section>
   <section class="card">
     <h2>Top referrers <span class="gen">(last 30 days — where traffic comes from)</span></h2>
@@ -523,16 +556,19 @@ export function adminRouter({ db, adminPassword, emailSender, now = () => new Da
     const scanCounts = new Map(db.scanDayCounts(ledgerFloorIso).map((d) => [d.date, d.count]));
     const purchaseCounts = new Map(db.webhookDayCounts(ledgerFloorIso).map((d) => [d.date, d.count]));
     const botCounts = new Map(db.botHitDayCounts(viewFloorTs).map((d) => [d.date, d.count]));
+    const cardCounts = new Map(db.cardEventDayCounts(viewFloorTs).map((d) => [d.date, d.count]));
     const last30dViews = [];
     const last30dScans = [];
     const last30dPurchases = [];
     const last30dBots = [];
+    const last30dCards = [];
     for (let i = DAYS_IN_WINDOW - 1; i >= 0; i--) {
       const date = new Date(todayStartMs - i * DAY_MS).toISOString().slice(0, 10);
       last30dViews.push({ date, count: viewCounts.get(date) ?? 0 });
       last30dScans.push({ date, count: scanCounts.get(date) ?? 0 });
       last30dPurchases.push({ date, count: purchaseCounts.get(date) ?? 0 });
       last30dBots.push({ date, count: botCounts.get(date) ?? 0 });
+      last30dCards.push({ date, count: cardCounts.get(date) ?? 0 });
     }
     // Top Referrers (owner 2026-10-10): bucket the last-30d window by ref
     // HOSTNAME (new URL().hostname, leading www. stripped; '' -> 'direct').
@@ -585,6 +621,22 @@ export function adminRouter({ db, adminPassword, emailSender, now = () => new Da
         total: db.countWebhooksTotal(epochIso),
         today: db.countWebhooksToday(today, epochIso),
         last30d: last30dPurchases,
+      },
+      // Share-card activity (owner-approved "Share-card download tracking"):
+      // every counted event is a dl-flagged card download ('download') or a
+      // prefilled share-text fetch ('share'). Floors mirror the views ledger
+      // exactly: total = epoch floor, today = todayViewFloorTs, last30d =
+      // viewFloorTs, recent = latest 20 at/after the epoch. `actions` is the
+      // epoch-floored downloads/shares split that powers the dashboard KPI.
+      cards: {
+        total: db.countCardEventsTotal(epochMs),
+        today: db.countCardEventsSince(todayViewFloorTs),
+        last30d: last30dCards,
+        recent: db.recentCardEvents(epochMs),
+        actions: {
+          downloads: db.countCardEventsActionSince('download', epochMs),
+          shares: db.countCardEventsActionSince('share', epochMs),
+        },
       },
     };
     if (wantsHtml(req)) {

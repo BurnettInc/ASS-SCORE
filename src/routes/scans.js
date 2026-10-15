@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { Router } from 'express';
 import { buildCardSvg, renderCardPng } from '../card.js';
+import { clientIp } from '../clientIp.js';
 import { selectRoast } from '../roast.js';
 import { toPublicScan, publicScore } from '../serialize.js';
 import { buildFreePayload, verifyReportToken, DISCLAIMER } from '../paywall.js';
@@ -219,7 +220,38 @@ export function scansRouter({ db, publicBaseUrl, reportTokenSecret, reportBaseUr
   const missing = (res, id) =>
     res.status(404).json({ error: { code: 'not_found', message: `No scan found with id "${id}"` } });
 
+  /**
+   * Best-effort share-card activity ledger write (the "shares per scan" KPI:
+   * a dl-flagged card download / a prefilled share-text fetch). Same
+   * soft-fail contract as the track route's bot ledger — a ledger failure is
+   * swallowed and logged, never a 500: counting must never break the thing it
+   * counts. ts is epoch ms from the SAME injectable clock the beacon ledgers
+   * use, so the admin floors + 30-day retention cut all of them identically.
+   */
+  const recordCardEvent = (scanId, action, req) => {
+    try {
+      db.insertCardEvent({
+        ts: Date.parse(now()),
+        ip: clientIp(req),
+        ua: (req.get('user-agent') || '').trim(),
+        scanId,
+        action,
+      });
+    } catch (err) {
+      console.error('[ass-score] card event ledger write failed:', err);
+    }
+  };
+
   // --- Shareable result card (deterministic PNG, sharp-rasterized SVG) -------
+  // GET /api/v1/scans/:id/card?dl=1 additionally records a 'download' event
+  // in the card_events ledger (the share-card download tracking KPI). The dl
+  // marker is ONLY consumed for the ledger: it never touches the SVG/PNG
+  // (bytes are identical with or without it) and never changes the
+  // Cache-Control headers (still `public, max-age=60`), so the preview <img>
+  // and examples-page embeds keep their cache-friendly behavior while a
+  // dl-flagged fetch gets its own (same-bytes) shared-cache entry. Only a
+  // literal `dl=1` counts — any other value (or a plain /card fetch) is an
+  // uncounted preview by definition.
   r.get('/api/v1/scans/:id/card', async (req, res, next) => {
     const scan = publicScan(req.params.id);
     if (!scan) return missing(res, req.params.id);
@@ -228,6 +260,7 @@ export function scansRouter({ db, publicBaseUrl, reportTokenSecret, reportBaseUr
         score: publicScore(scan.score), // public score = stored slop direction (higher = worse, 0 = clean)
         url: scan.url,
       }));
+      if (req.query.dl === '1') recordCardEvent(scan.id, 'download', req);
       res.set('Content-Type', 'image/png');
       res.set('Cache-Control', 'public, max-age=60');
       res.send(png);
@@ -239,9 +272,14 @@ export function scansRouter({ db, publicBaseUrl, reportTokenSecret, reportBaseUr
   // --- Pre-filled share text (copy-to-clipboard + social post) ---------------
   // Text mirrors the site's share fallback exactly (owner-approved): the
   // "(low is good)" clarification rides the same line on every surface.
+  // Every successful fetch records a 'share' event — the site fetches this
+  // endpoint ONLY when the visitor actually copies/shares the text (fire-
+  // and-forget on the button), so the count tracks real share intent, and a
+  // route consumer (curl/tests) is indistinguishable from a page visitor.
   r.get('/api/v1/scans/:id/share', (req, res) => {
     const scan = publicScan(req.params.id);
     if (!scan) return missing(res, req.params.id);
+    recordCardEvent(scan.id, 'share', req);
     const shareUrl = `${shareBase.replace(/\/+$/, '')}/scan/${scan.id}`;
     res.json({
       url: shareUrl,
