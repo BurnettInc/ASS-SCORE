@@ -164,6 +164,37 @@ export function openDb(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_bot_hits_ts ON bot_hits (ts);
   `);
 
+  // Share-card / share-text activity ledger (owner-approved backlog
+  // "Share-card download tracking", 2026-10): one row per COUNTED share
+  // action — GET /api/v1/scans/:id/card?dl=1 records action 'download', GET
+  // /api/v1/scans/:id/share records action 'share'. PLAIN card GETs (the
+  // result-page preview <img>, the examples-page SSR embeds) are deliberately
+  // NOT recorded — only dl-flagged fetches count as downloads, so the
+  // "downloads per scan" KPI never overcounts previews. This is a brand-new
+  // table, so the idempotent guard is CREATE TABLE IF NOT EXISTS itself (the
+  // same pattern every other new ledger — scan_events, bot_hits — follows);
+  // no ALTER is needed because no pre-existing table gains a column (that is
+  // the only case the page_views PRAGMA/ALTER guard exists for).
+  // Uniqueness story mirrors page_views: the AUTOINCREMENT id is the row
+  // identity, and NO UNIQUE(scan_id, action) exists on purpose — a visitor
+  // downloading the same card twice or copying twice is real signal, so the
+  // totals are honest event counts and the recent list is raw evidence.
+  // Same epoch-ms ts convention as page_views/bot_hits (Date.parse of the
+  // route's injectable clock), so the 30-day retention purge cuts all three
+  // ledgers with the identical cutoff. ts is indexed for the same
+  // floor-filtered day counts as the beacon ledgers.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS card_events (
+      id      INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts      INTEGER NOT NULL,
+      ip      TEXT NOT NULL,
+      ua      TEXT NOT NULL DEFAULT '',
+      scan_id TEXT NOT NULL,
+      action  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_card_events_ts ON card_events (ts);
+  `);
+
   // Paid-report orders — the 'collect email before checkout' fulfillment flow
   // (built 2026-09-25). One row per POST /api/v1/order-intent: the site hands
   // the buyer's email + scan id BEFORE redirecting to the Stripe payment link,
@@ -284,6 +315,34 @@ export function openDb(dbPath) {
   );
   const recentBotHitsSinceStmt = db.prepare(
     'SELECT ts, ip, ua, path, ref, reason FROM bot_hits WHERE ts >= ? ORDER BY ts DESC LIMIT 20'
+  );
+  // Share-card activity ledger statements — mirrors of the page-view/bot-hit
+  // families (same epoch-ms ts convention, same floor-filtered day counts,
+  // same retention cutoff). The recent query LEFT JOINs the scans table so
+  // the admin list can show the scanned URL next to each event; a scan purged
+  // by retention (an old scan whose card was downloaded later) yields ''
+  // instead of an error.
+  const insertCardEventStmt = db.prepare(
+    'INSERT INTO card_events (ts, ip, ua, scan_id, action) VALUES (?, ?, ?, ?, ?)'
+  );
+  const countCardEventsStmt = db.prepare('SELECT COUNT(*) AS n FROM card_events');
+  const countCardEventsSinceStmt = db.prepare('SELECT COUNT(*) AS n FROM card_events WHERE ts >= ?');
+  const countCardEventsActionStmt = db.prepare('SELECT COUNT(*) AS n FROM card_events WHERE action = ?');
+  const countCardEventsActionSinceStmt = db.prepare(
+    'SELECT COUNT(*) AS n FROM card_events WHERE ts >= ? AND action = ?'
+  );
+  const cardEventDayCountsStmt = db.prepare(
+    "SELECT substr(datetime(ts / 1000, 'unixepoch'), 1, 10) AS day, COUNT(*) AS n FROM card_events WHERE ts >= ? GROUP BY day"
+  );
+  const recentCardEventsStmt = db.prepare(
+    `SELECT c.ts, c.scan_id, c.action, s.url AS url
+     FROM card_events c LEFT JOIN scans s ON s.id = c.scan_id
+     ORDER BY c.ts DESC LIMIT 20`
+  );
+  const recentCardEventsSinceStmt = db.prepare(
+    `SELECT c.ts, c.scan_id, c.action, s.url AS url
+     FROM card_events c LEFT JOIN scans s ON s.id = c.scan_id
+     WHERE c.ts >= ? ORDER BY c.ts DESC LIMIT 20`
   );
   // Scan-count queries for admin stats EXCLUDE internal rows (admin-generated
   // scans must never move the public-facing counters — owner 2026-10-01).
@@ -599,6 +658,48 @@ export function openDb(dbPath) {
     recentBotHits(sinceTs = null) {
       const rows = sinceTs === null ? recentBotHitsStmt.all() : recentBotHitsSinceStmt.all(sinceTs);
       return rows.map((r) => ({ ts: r.ts, ip: r.ip, ua: r.ua, path: r.path, ref: r.ref, reason: r.reason }));
+    },
+    // --- Share-card / share-text activity ledger -----------------------------
+    /**
+     * Record one COUNTED share action (owner-approved "Share-card download
+     * tracking" backlog): a dl-flagged card download or a share-text fetch.
+     * Called by the scans routes AFTER the scan exists and the response will
+     * be 200; a ledger failure is swallowed by the caller (never breaks the
+     * card/share response — same soft-fail contract as the beacon ledgers).
+     * @param {{ ts: number, ip: string, ua?: string, scanId: string,
+     *           action: 'download' | 'share' }} event
+     */
+    insertCardEvent({ ts, ip, ua = '', scanId, action }) {
+      insertCardEventStmt.run(ts, ip, ua, scanId, action);
+    },
+    /** Total card-event rows (all time); with `sinceTs` (epoch ms) only rows at/after it. */
+    countCardEventsTotal(sinceTs = null) {
+      return sinceTs === null ? countCardEventsStmt.get().n : countCardEventsSinceStmt.get(sinceTs).n;
+    },
+    /** Card-event rows with ts >= sinceTs (the 30-day window / 'today'). */
+    countCardEventsSince(sinceTs) {
+      return countCardEventsSinceStmt.get(sinceTs)?.n ?? 0;
+    },
+    /** Card-event rows with ts >= sinceTs for ONE action — the dashboard's
+     *  downloads/shares split. `sinceTs` null = all time (the same
+     *  null-means-no-floor convention every other counter follows); the
+     *  admin route passes the epoch floor when a cutover exists. */
+    countCardEventsActionSince(action, sinceTs = null) {
+      const row = sinceTs === null
+        ? countCardEventsActionStmt.get(action)
+        : countCardEventsActionSinceStmt.get(sinceTs, action);
+      return row?.n ?? 0;
+    },
+    /** Per-UTC-day card-event counts with ts >= sinceTs: [{ date, count }]. */
+    cardEventDayCounts(sinceTs) {
+      return cardEventDayCountsStmt.all(sinceTs).map((r) => ({ date: r.day, count: r.n }));
+    },
+    /** Latest 20 card events, newest first; with `sinceTs` only rows at/after
+     *  it. `url` is the scanned URL when the scan row still exists (LEFT JOIN
+     *  — a card can be downloaded after its scan aged past retention), else ''. */
+    recentCardEvents(sinceTs = null) {
+      const rows = sinceTs === null ? recentCardEventsStmt.all() : recentCardEventsSinceStmt.all(sinceTs);
+      return rows.map((r) => ({ ts: r.ts, scan_id: r.scan_id, url: r.url ?? '', action: r.action }));
     },
     /** Total scan rows (all time); with `sinceIso` only rows created at/after it. */
     countScansTotal(sinceIso = null) {
