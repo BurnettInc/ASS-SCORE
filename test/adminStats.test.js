@@ -227,7 +227,7 @@ test('admin: stats JSON has views (total/today/last30d x30/recent) and scans sum
     const r = await fetch(`${app.base}/admin/stats`, { headers: { 'x-admin-password': PASSWORD } });
     assert.equal(r.status, 200);
     const json = await r.json();
-    assert.deepEqual(Object.keys(json).sort(), ['bots', 'cards', 'purchases', 'scans', 'sources', 'views']);
+    assert.deepEqual(Object.keys(json).sort(), ['bots', 'cards', 'purchases', 'scans', 'sources', 'utm', 'views']);
     assert.equal(json.views.total, 1, 'bot view never counted');
     assert.equal(json.views.today, 1);
     assert.equal(json.views.last30d.length, 30, 'exactly 30 daily buckets');
@@ -318,7 +318,7 @@ test('admin: stats JSON gains purchases {total, today, last30d} from the webhook
     const r = await fetch(`${app.base}/admin/stats`, { headers: { 'x-admin-password': PASSWORD } });
     assert.equal(r.status, 200);
     const json = await r.json();
-    assert.deepEqual(Object.keys(json).sort(), ['bots', 'cards', 'purchases', 'scans', 'sources', 'views']);
+    assert.deepEqual(Object.keys(json).sort(), ['bots', 'cards', 'purchases', 'scans', 'sources', 'utm', 'views']);
     assert.equal(json.purchases.total, 4, 'every ledger row counts (any status, any age)');
     assert.equal(json.purchases.today, 1, 'today = created_at UTC-day bucket');
     assert.equal(json.purchases.last30d.length, 30, 'exactly 30 daily buckets');
@@ -408,7 +408,7 @@ test('admin: HTML page shows the empty state when no views recorded yet', async 
     // the same app still serves exact JSON to non-HTML consumers
     const j = await fetch(`${app.base}/admin/stats`, { headers: { 'x-admin-password': PASSWORD } });
     assert.equal(j.status, 200);
-    assert.deepEqual(Object.keys(await j.json()).sort(), ['bots', 'cards', 'purchases', 'scans', 'sources', 'views']);
+    assert.deepEqual(Object.keys(await j.json()).sort(), ['bots', 'cards', 'purchases', 'scans', 'sources', 'utm', 'views']);
   } finally {
     app.server.close();
   }
@@ -421,7 +421,7 @@ test('admin: JSON consumers are untouched (Accept: application/json and */* both
     const explicitJson = await fetch(`${app.base}/admin/stats`, { headers: { accept: 'application/json', 'x-admin-password': PASSWORD } });
     assert.equal(explicitJson.status, 200);
     assert.ok((explicitJson.headers.get('content-type') || '').includes('application/json'));
-    assert.deepEqual(Object.keys(await explicitJson.json()).sort(), ['bots', 'cards', 'purchases', 'scans', 'sources', 'views'], 'JSON shape unchanged');
+    assert.deepEqual(Object.keys(await explicitJson.json()).sort(), ['bots', 'cards', 'purchases', 'scans', 'sources', 'utm', 'views'], 'JSON shape unchanged');
     const wildcard = await fetch(`${app.base}/admin/stats?pw=${encodeURIComponent(PASSWORD)}`, { headers: { accept: '*/*' } });
     assert.equal(wildcard.status, 200);
     const wildcardText = await wildcard.text();

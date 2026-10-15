@@ -46,6 +46,7 @@ const BOT_PATTERNS = [
 const DEDUP_WINDOW_MS = 30_000;
 const MAX_PATH_LENGTH = 200;
 const MAX_REF_LENGTH = 500;
+const MAX_UTM_LENGTH = 100;
 
 export function trackRouter({ db, now = () => new Date().toISOString() } = {}) {
   const r = Router();
@@ -64,6 +65,13 @@ export function trackRouter({ db, now = () => new Date().toISOString() } = {}) {
     if (typeof raw !== 'string') return '';
     return raw.trim().slice(0, MAX_REF_LENGTH);
   };
+  /** Server-side UTM sanitization (owner 2026-10-15): identical contract to
+   *  ref but capped at 100 chars — the beacon never sends a longer tag, and a
+   *  hostile body must not be able to stuff arbitrary text into the ledger. */
+  const sanitizeUtm = (raw) => {
+    if (typeof raw !== 'string') return '';
+    return raw.trim().slice(0, MAX_UTM_LENGTH);
+  };
   r.post('/api/v1/track', (req, res) => {
     try {
       const rawPath = req.body?.path;
@@ -74,6 +82,14 @@ export function trackRouter({ db, now = () => new Date().toISOString() } = {}) {
       const ts = Date.parse(now()); // epoch ms (the page_views.ts convention)
       const ip = clientIp(req);
       const ref = sanitizeRef(req.body?.ref);
+      // UTM campaign attribution (owner 2026-10-15): the site beacon parses
+      // ?utm_source/utm_medium/utm_campaign out of the landing URL and sends
+      // them here — they survive in-app browsers that strip the Referer
+      // header. Sanitized exactly like ref (string, trimmed, capped); anything
+      // else -> '', stored on the page_views row only (bot_hits unchanged).
+      const utmSource = sanitizeUtm(req.body?.utm_source);
+      const utmMedium = sanitizeUtm(req.body?.utm_medium);
+      const utmCampaign = sanitizeUtm(req.body?.utm_campaign);
       // Bot-ledger write at a drop point. The outer try/catch already keeps the
       // 204 contract, but a ledger failure must also never break this route —
       // and the views row (if any) is written independently of this.
@@ -108,7 +124,7 @@ export function trackRouter({ db, now = () => new Date().toISOString() } = {}) {
         return res.status(204).end();
       }
       lastHit.set(ip, ts);
-      db.insertPageView({ ts, ip, ua, path, ref });
+      db.insertPageView({ ts, ip, ua, path, ref, utmSource, utmMedium, utmCampaign });
       return res.status(204).end();
     } catch {
       return res.status(204).end();

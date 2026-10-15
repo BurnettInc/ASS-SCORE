@@ -33,7 +33,8 @@ import { classifyApp, LABELS } from '../uaApp.js';
  * Response (200, password correct):
  *   { views: { total, today, last30d: [{date, count} x30], recent: [{ts, ip,
  *     ua, path, ref} x latest 50] }, sources: { total, top: [{source, count}
- *     x10], direct_total, direct_by_app: [{app, label, count}] }, bots: {
+ *     x10], direct_total, direct_by_app: [{app, label, count}] }, utm: {
+ *     total, by_source: [{source, medium, campaign, count}] }, bots: {
  *     total, today, last30d: [{date, count} x30], recent: [{ts, ip, ua, path,
  *     ref, reason} x latest 20] }, scans: { total, today, last30d: x30,
  *     recent: [{id, url, score, created_at} x latest 20] }, purchases: {
@@ -57,6 +58,15 @@ import { classifyApp, LABELS } from '../uaApp.js';
  * is the sum of the buckets and equals the 'direct' entry's count in `top`
  * by construction (both aggregate the same ref='' rows over the same floor);
  * when there is no direct traffic both are zero / empty.
+ *
+ * `utm` (owner 2026-10-15) answers "which campaign brought this view": the
+ * SAME viewFloorTs window, aggregated per (utm_source, utm_medium,
+ * utm_campaign) triplet, only rows where utm_source != '' (tagged views —
+ * the beacon parses ?utm_* out of the landing URL, so attribution survives
+ * in-app browsers that strip the Referer). `by_source` is sorted count
+ * desc then source asc; `total` is the sum of the bucket counts (tagged
+ * views only — untagged rows are never part of UTM attribution, they are
+ * 'direct' or referrer traffic in `sources`).
  *
  * `bots` (owner 2026-10-10) answers "prove it's not a bot": every hit the
  * track route DROPPED (empty UA / webdriver / known-bot UA / per-IP 30s
@@ -105,7 +115,7 @@ const truncate = (s, n) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 
 /** Pure-CSS grouped bar chart + cards/tables, fully server-rendered. */
 function renderAdminPage(stats, generatedAt, opts = {}) {
-  const { views, scans, purchases, sources, bots, cards } = stats;
+  const { views, scans, purchases, sources, bots, cards, utm } = stats;
   const hasViews = views.total > 0 || views.recent.length > 0 || views.last30d.some((d) => d.count > 0);
   const hasBots = bots.total > 0 || bots.recent.length > 0 || bots.last30d.some((d) => d.count > 0);
   // EPOCAH CUTOVER (owner 2026-10-07): show the counting floor + the reset
@@ -190,6 +200,30 @@ function renderAdminPage(stats, generatedAt, opts = {}) {
   const sourcesBlock = sourceRows
     ? `<div class="sources"><div class="src-scale">bar width = share of ${esc(String(sources.total))} views in the window (top ${sources.top.length})</div>${sourceRows}</div>`
     : `<div class="empty">No referrers recorded in the window yet. Views with no referrer count as "direct".</div>`;
+  // UTM attribution (owner 2026-10-15): same visual language as the Top
+  // Referrers card — source name prominent, medium · campaign as a secondary
+  // line (title tooltip repeats it for the truncated case), count right-aligned
+  // with a % share bar. The card is NOT rendered at all when there are no
+  // tagged views (utm.total === 0 -> utmBlock === '' -> the section is omitted
+  // by the conditional in the page body — no empty shell).
+  const utmRows = utm.by_source
+    .map((u) => {
+      const pct = utm.total > 0 ? Math.max(u.count > 0 ? 1 : 0, Math.round((u.count / utm.total) * 100)) : 0;
+      const detail = [u.medium, u.campaign].filter((v) => v !== '').join(' · ');
+      const detailLine = detail
+        ? `<div class="utm-detail" title="${esc(detail)}">${esc(detail)}</div>`
+        : '';
+      return `<div class="source">
+        <div class="src-line"><span class="src-name" title="${esc(u.source)}">${esc(u.source)}</span><span class="src-count">${u.count}<span class="src-pct">${pct}%</span></span></div>
+        <div class="src-bar"><div class="src-fill" style="width:${pct}%"></div></div>
+        ${detailLine}
+      </div>`;
+    })
+    .join('');
+  const utmBlock =
+    utm.total > 0
+      ? `<div class="sources"><div class="src-scale">bar width = share of ${esc(String(utm.total))} tagged views in the window (${utm.by_source.length} source${utm.by_source.length === 1 ? '' : 's'})</div>${utmRows}</div>`
+      : '';
 
   const botRows = bots.recent
     .map(
@@ -339,6 +373,7 @@ tr:hover td{background:${'#1a2336'}}
 .src-bar{height:6px;border-radius:3px;background:${'#1c2436'};overflow:hidden}
 .src-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--green),var(--lime))}
 .src-direct{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;padding-left:2px}
+.utm-detail{color:var(--muted);font-size:11px;margin-top:1px;overflow-wrap:anywhere;line-height:1.4}
 .src-chip{display:inline-flex;align-items:center;gap:6px;background:${'#1c2436'};border:1px solid var(--border);border-radius:999px;padding:2px 10px;font-size:11px;color:var(--text);white-space:nowrap}
 .src-chip-n{color:var(--lime);font-weight:800;font-variant-numeric:tabular-nums}
 .empty{color:var(--muted);font-size:13px;padding:26px 8px;text-align:center;border:1px dashed var(--border);border-radius:10px}
@@ -386,6 +421,10 @@ footer{margin-top:28px;color:${'#5b6b84'};font-size:12px;text-align:center;lette
     <h2>Top referrers <span class="gen">(last 30 days — where traffic comes from)</span></h2>
     ${sourcesBlock}
   </section>
+  ${utmBlock ? `<section class="card">
+    <h2>UTM attribution <span class="gen">(last 30 days — tagged landing links, survives stripped referrers)</span></h2>
+    ${utmBlock}
+  </section>` : ''}
   <section class="card">
     <h2>Recent views <span class="gen">(${views.recent.length})</span></h2>
     ${tableBlock}
@@ -636,6 +675,16 @@ export function adminRouter({ db, adminPassword, emailSender, now = () => new Da
       .map(([app, count]) => ({ app, label: LABELS[app] ?? 'Unknown', count }))
       .sort((a, b) => b.count - a.count || b.app.localeCompare(a.app));
     const directTotal = directByApp.reduce((n, d) => n + d.count, 0);
+    // UTM attribution (owner 2026-10-15): the same viewFloorTs window,
+    // grouped by (utm_source, utm_medium, utm_campaign) — SQL already groups,
+    // so each row is a unique triplet; sort count desc then source asc (same
+    // tie-break language as sources.top). utm.total is the sum of TAGGED rows
+    // only, never the window's whole view count — untagged views belong to
+    // `sources` (direct/referrer), not to campaign attribution.
+    const utmBySource = db
+      .pageViewUtmCounts(viewFloorTs)
+      .sort((a, b) => b.count - a.count || (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
+    const utmTotal = utmBySource.reduce((n, u) => n + u.count, 0);
     const stats = {
       views: {
         total: db.countPageViews(epochMs),
@@ -654,6 +703,14 @@ export function adminRouter({ db, adminPassword, emailSender, now = () => new Da
         // entry in `top` (both are the same ref='' rows over viewFloorTs).
         direct_total: directTotal,
         direct_by_app: directByApp,
+      },
+      // UTM campaign attribution (owner 2026-10-15) — additive. Floors follow
+      // `sources` exactly (viewFloorTs). utm.total === sum of by_source counts,
+      // and rows with utm_source === '' never appear (untagged views are not
+      // campaign attribution — they live in `sources` as direct/referrer).
+      utm: {
+        total: utmTotal,
+        by_source: utmBySource,
       },
       bots: {
         total: db.countBotHitsTotal(epochMs),

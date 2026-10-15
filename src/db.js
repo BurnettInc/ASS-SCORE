@@ -128,7 +128,10 @@ export function openDb(dbPath) {
       ip   TEXT NOT NULL,
       ua   TEXT NOT NULL DEFAULT '',
       path TEXT NOT NULL,
-      ref  TEXT NOT NULL DEFAULT ''
+      ref  TEXT NOT NULL DEFAULT '',
+      utm_source   TEXT NOT NULL DEFAULT '',
+      utm_medium   TEXT NOT NULL DEFAULT '',
+      utm_campaign TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_page_views_ts ON page_views (ts);
   `);
@@ -141,6 +144,23 @@ export function openDb(dbPath) {
   const pvCols = db.prepare('PRAGMA table_info(page_views)').all().map((c) => c.name);
   if (!pvCols.includes('ref')) {
     db.exec("ALTER TABLE page_views ADD COLUMN ref TEXT NOT NULL DEFAULT ''");
+  }
+  // Migration for the UTM columns (owner 2026-10-15): the site beacon sends
+  // utm_source/utm_medium/utm_campaign from the landing URL (?utm_* params —
+  // campaign attribution that survives in-app browsers which strip the
+  // Referer header). Same guard pattern as ref: PRAGMA table_info against the
+  // LIVE page_views shape (pvCols is read ONCE above, so a DB that already got
+  // ref via an older migration still lacks the utm columns here and the ALTERs
+  // run). NOT NULL DEFAULT '' backfills pre-migration rows to '' = untagged,
+  // so every existing view reads exactly as if the columns never existed.
+  if (!pvCols.includes('utm_source')) {
+    db.exec("ALTER TABLE page_views ADD COLUMN utm_source TEXT NOT NULL DEFAULT ''");
+  }
+  if (!pvCols.includes('utm_medium')) {
+    db.exec("ALTER TABLE page_views ADD COLUMN utm_medium TEXT NOT NULL DEFAULT ''");
+  }
+  if (!pvCols.includes('utm_campaign')) {
+    db.exec("ALTER TABLE page_views ADD COLUMN utm_campaign TEXT NOT NULL DEFAULT ''");
   }
 
   // Bot-hit ledger (owner 2026-10-10): every beacon hit the route DROPS —
@@ -287,7 +307,7 @@ export function openDb(dbPath) {
   // old behavior. The paired statements exist because better-sqlite3 prepared
   // statements are static — the method picks the filtered one when a floor is
   // given and never builds SQL strings.
-  const insertPageViewStmt = db.prepare('INSERT INTO page_views (ts, ip, ua, path, ref) VALUES (?, ?, ?, ?, ?)');
+  const insertPageViewStmt = db.prepare('INSERT INTO page_views (ts, ip, ua, path, ref, utm_source, utm_medium, utm_campaign) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
   const countPageViewsStmt = db.prepare('SELECT COUNT(*) AS n FROM page_views');
   const countPageViewsSinceStmt = db.prepare('SELECT COUNT(*) AS n FROM page_views WHERE ts >= ?');
   const pageViewDayCountsStmt = db.prepare(
@@ -308,6 +328,15 @@ export function openDb(dbPath) {
   // retroactively to all recorded views.
   const pageViewDirectUasStmt = db.prepare(
     "SELECT ua, COUNT(*) AS n FROM page_views WHERE ts >= ? AND ref = '' GROUP BY ua ORDER BY n DESC"
+  );
+  // Admin "UTM attribution" aggregation (owner 2026-10-15): per
+  // (utm_source, utm_medium, utm_campaign) counts of TAGGED views (utm_source
+  // != '') in the floor window. Rows with no UTM params are deliberately
+  // excluded — the route's `utm.total` is the sum of tagged views only, never
+  // the window's whole view count — and the route sorts count desc then
+  // source asc. Grouping in SQL keeps the route's map-building trivial.
+  const pageViewUtmCountsStmt = db.prepare(
+    "SELECT utm_source, utm_medium, utm_campaign, COUNT(*) AS n FROM page_views WHERE ts >= ? AND utm_source != '' GROUP BY utm_source, utm_medium, utm_campaign"
   );
   const recentPageViewsStmt = db.prepare('SELECT ts, ip, ua, path, ref FROM page_views ORDER BY ts DESC LIMIT 50');
   const recentPageViewsSinceStmt = db.prepare(
@@ -608,13 +637,17 @@ export function openDb(dbPath) {
     /**
      * Record one accepted beacon hit. The route filters bots / empty UAs /
      * per-IP 30s dedup BEFORE calling this, so every insert is a real view.
-     * @param {{ ts: number, ip: string, ua: string, path: string, ref?: string }} view
+     * @param {{ ts: number, ip: string, ua: string, path: string, ref?: string,
+     *           utmSource?: string, utmMedium?: string, utmCampaign?: string }} view
      *   `ref` is the sanitized referrer URL from document.referrer ('' when the
      *   beacon sent none / it was not a string) — the admin sources aggregation
-     *   buckets it into a hostname, '' => 'direct'.
+     *   buckets it into a hostname, '' => 'direct'. utmSource/utmMedium/
+     *   utmCampaign are the sanitized ?utm_* tags from the landing URL (the
+     *   track route caps them at 100 chars) — the admin utm aggregation
+     *   groups by the triplet, rows with utm_source '' are untagged.
      */
-    insertPageView({ ts, ip, ua, path, ref = '' }) {
-      insertPageViewStmt.run(ts, ip, ua, path, ref);
+    insertPageView({ ts, ip, ua, path, ref = '', utmSource = '', utmMedium = '', utmCampaign = '' }) {
+      insertPageViewStmt.run(ts, ip, ua, path, ref, utmSource, utmMedium, utmCampaign);
     },
     /** Total page-view rows (all time); with `sinceTs` (epoch ms) only rows at/after it. */
     countPageViews(sinceTs = null) {
@@ -646,6 +679,21 @@ export function openDb(dbPath) {
      */
     pageViewDirectUas(sinceTs) {
       return pageViewDirectUasStmt.all(sinceTs).map((r) => ({ ua: r.ua, count: r.n }));
+    },
+    /**
+     * Per-(source,medium,campaign) counts of TAGGED page views (utm_source !=
+     * '') with ts >= sinceTs: [{ utm_source, utm_medium, utm_campaign, count }].
+     * The admin route sorts count desc then source asc and sums the counts
+     * into utm.total. Rows without tags never appear — untagged views are not
+     * UTM attribution by definition (they are 'direct' or referrer traffic).
+     */
+    pageViewUtmCounts(sinceTs) {
+      return pageViewUtmCountsStmt.all(sinceTs).map((r) => ({
+        source: r.utm_source,
+        medium: r.utm_medium,
+        campaign: r.utm_campaign,
+        count: r.n,
+      }));
     },
     /** Latest 50 page views, newest first; with `sinceTs` only rows at/after it. */
     recentPageViews(sinceTs = null) {
