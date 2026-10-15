@@ -70,6 +70,18 @@ export function scansRouter({ db, publicBaseUrl, reportTokenSecret, reportBaseUr
     res.set('Cache-Control', 'public, max-age=86400');
     res.send(DONKEY_DASHBOARD_PNG);
   });
+  // Social-card JPEG served from the BACKEND origin (same pattern as the donkey
+  // asset above): the og:image URL points here because the platform site domain
+  // slaps `Cache-Control: no-store` on every asset, which breaks X/Twitter's card
+  // image fetcher. This origin serves cache-friendly headers so the crawler gets
+  // a clean 200 + public, max-age response. Same 1200x630 brand-approved JPEG
+  // that the site publishes (flattened RGB version — no alpha in JPEG).
+  const ASS_SCORE_CARD_JPG = fs.readFileSync(new URL('../assets/ass-score-card.jpg', import.meta.url));
+  r.get('/assets/ass-score-card.jpg', (_req, res) => {
+    res.set('Content-Type', 'image/jpeg');
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(ASS_SCORE_CARD_JPG);
+  });
 
   /** True when the request carries the valid HMAC report token for this scan. */
   const hasValidToken = (req, scanId) =>
