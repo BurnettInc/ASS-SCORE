@@ -69,14 +69,17 @@ export function buildRampStops(bands = VERDICT_BANDS) {
 }
 
 /**
- * Donkey mascot — the approved share-card cutout (owner-approved final asset,
- * 2026-09-24: donkey-sharecard.png, 1191×1186, near-square 1.0042, RGBA
- * transparent bg, solid dark subject with soft feathered edges — used exactly
- * as supplied, never tinted, cropped or re-cropped). It is embedded as a
- * data-URI so the card is fully self-contained and byte-deterministic on
- * every host. The same image is used for every band.
- * Rendered with preserveAspectRatio="xMidYMid meet" into the fixed zone: the
- * near-square asset scales to 510×508 (no cropping) and centers vertically.
+ * Donkey mascot — the owner's live-scan share-card photo (owner upload
+ * 2026-10-16, shipped byte-identical: LiveScanDonkey.png -> donkey-sharecard.png,
+ * 1485×1059, 8-bit RGB — NO alpha, aspect 1.4023, solid black background with
+ * the donkey subject centered at asset x 441-1108 / y 79-1030; used exactly as
+ * supplied, never tinted, cropped or re-cropped). It is embedded as a data-URI
+ * so the card is fully self-contained and byte-deterministic on every host.
+ * The same image is used for every band.
+ * Rendered with preserveAspectRatio="xMidYMid meet" into the fixed 1.4023
+ * zone: the photo fills the zone edge-to-edge (no letterboxing), and its black
+ * margins blend invisibly with the card's black, so the donkey appears as a
+ * floating subject like the old cutout did.
  */
 const MASCOT_B64 = fs.readFileSync(new URL('./assets/donkey-sharecard.png', import.meta.url)).toString('base64');
 const MASCOT_HREF = `data:image/png;base64,${MASCOT_B64}`;
@@ -190,14 +193,17 @@ export function buildCardSvg({ score, url }) {
   const STAMP_FS = 34; const STAMP_PAD_X = 42; const STAMP_H = 64;
   const stampW = label.length * 0.6 * STAMP_FS + STAMP_PAD_X * 2;
   const STAMP_X = 84; const STAMP_Y = 700;
-  // Donkey cutout zone — fixed box (owner-polish pass 2026-09-24, right edge
-  // at 1580 = 20px card margin). The committed donkey-sharecard.png is near-
-  // square (1191×1186) and renders with preserveAspectRatio="xMidYMid meet":
-  // scale = min(510/1191, 795/1186) ≈ 0.4282 → 510×508, x-centered on the
-  // zone, vertically centered at y≈210-718 (no cropping — a slice would cut
-  // ~40% of the width). The paper sign sits LEFT of the torso; the only zone
-  // overlap is its 26px left sliver under the sign's right edge.
-  const D_X = 1070; const D_Y = 66; const D_W = 510; const D_H = 795;
+  // Donkey photo zone — fixed box sized to the committed asset's aspect
+  // (owner swap 2026-10-16: 1485×1059, 1.4023; right edge at 1580 = 20px card
+  // margin, same as before). The photo renders with preserveAspectRatio=
+  // "xMidYMid meet": scale = min(670/1485, 482/1059) ≈ 0.4512 → 670×478, so it
+  // fills the zone edge-to-edge (a ≤2px black letterbox, invisible on the
+  // black card). The photo's black margins blend with the card black; the
+  // donkey subject (asset x 441-1108 / y 79-1030) lands at card x ≈ 1109-1410,
+  // y ≈ 250-679 — vertically centered where the old cutout stood (y ≈ 462) and
+  // clear of the sign's right edge (~1102, plus the sign paints on top of the
+  // image's black left band anyway).
+  const D_X = 910; const D_Y = 212; const D_W = 670; const D_H = 482;
   const SIGN_X = 700; const SIGN_Y = 538; const SIGN_W = 396; const SIGN_H = 236; // paper sign
   const DISC_Y = 846;
 
