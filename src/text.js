@@ -81,6 +81,64 @@ export function extractText(html) {
   };
 }
 
+
+/**
+ * Body-only extraction (INVESTIGATION FIX, 2026-10-16): identical to
+ * extractText, but strips site chrome — <nav>, <header>, <footer>, <button> —
+ * BEFORE text/sentence/paragraph extraction. Used ONLY for the repetition-
+ * family corpora (repetitive rule + crossPage in-page phrases + boilerplate
+ * dup-blocks), so chrome nav/footer/button strings ("Contact", "Home",
+ * "Book a call") can never register as repeated writing. BODY text stays
+ * fully in scope. Filler/boilerplate-regex/infoDensity keep the full corpus.
+ * @returns {{ title: string, text: string, paragraphs: string[], sentences: string[], words: string[] }}
+ */
+export function extractBodyText(html) {
+  const $ = cheerio.load(String(html), { decodeEntities: true });
+  $(NON_TEXT_TAGS).remove();
+  $('nav, header, footer, button').remove();
+  const title = $('title').first().text().replace(/\s+/g, ' ').trim();
+  const bodyEl = $('body');
+  const root = bodyEl.length > 0 ? bodyEl : $('html');
+  const raw = root.text();
+  const text = raw.replace(/\s+/g, ' ').trim();
+  const paragraphs = [];
+  $(PARA_TAGS).each((_, el) => {
+    const t = $(el).text().replace(/\s+/g, ' ').trim();
+    if (t.length > 0) paragraphs.push(t);
+  });
+  return {
+    title,
+    text,
+    paragraphs,
+    sentences: splitSentences(joinWithBoundarySpaces($, root[0])),
+    words: tokenize(text),
+    stopwords: STOPWORDS,
+  };
+}
+
+/**
+ * Body-only READABLE extraction (INVESTIGATION FIX 2026-10-16): extractReadableText
+ * with <nav>/<header>/<footer>/<button> removed first — quote/evidence strings
+ * for the repetition family come from the same body corpus they detect on, so
+ * a nav-run sentence can never appear as the "evidence" for a body phrase.
+ * Quote/evidence ONLY — never feeds a score.
+ * @returns {{ text: string, sentences: string[], paragraphs: string[] }}
+ */
+export function extractBodyReadableText(html) {
+  const $ = cheerio.load(String(html), { decodeEntities: true });
+  $(NON_TEXT_TAGS).remove();
+  $('nav, header, footer, button').remove();
+  const bodyEl = $('body');
+  const raw = joinWithBoundarySpaces($, (bodyEl.length > 0 ? bodyEl : $('html'))[0]);
+  const text = raw.replace(/\s+/g, ' ').trim();
+  const paragraphs = [];
+  $(PARA_TAGS).each((_, el) => {
+    const t = joinWithBoundarySpaces($, el).replace(/\s+/g, ' ').trim();
+    if (t.length > 0) paragraphs.push(t);
+  });
+  return { text, sentences: splitSentences(text), paragraphs };
+}
+
 /**
  * Boundary-spaced extraction for QUOTE/EVIDENCE strings ONLY (owner-approved
  * Option B, 2026-10-07 — see /home/team/shared/text-extraction-bug/

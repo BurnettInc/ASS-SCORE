@@ -312,7 +312,7 @@ test('matrix: blog2posts — REPETITION (crossPage) 5, STRUCTURE (repetitive) 0 
   assert.equal(fixtureBreakdown('blog2posts', 5).composite, 9);
 });
 
-test('matrix: stripe — REPETITION (crossPage) fires 3 phrase receipts; STRUCTURE (repetitive) 25 -> 44', () => {
+test('matrix: stripe — REPETITION (crossPage) fires 3 phrase receipts; STRUCTURE (repetitive) 25 -> 41', () => {
   const text = extractText(loadFixture('stripe'));
   const cp = analyzeCrossPage({
     pages: [{ url: 'https://stripe.com/', main: { words: text.words }, sentences: text.sentences, paragraphs: text.paragraphs, title: text.title }],
@@ -326,8 +326,14 @@ test('matrix: stripe — REPETITION (crossPage) fires 3 phrase receipts; STRUCTU
   // 107 real sentences (mean 16.6), exposing the real repetition: 4× "read the
   // story…" / 3× "read the guide…" openings, 2× near-identical pairs, 2×
   // repeated paragraphs. No phrase receipts (those live under crossPage).
+  // 44 -> 41 (chrome-repetition fix 2026-10-16, MIN_REPEATED_WORDS = 3): the
+  // repeated-paragraph term stops counting 1-2 word fragments — on this
+  // fixture that drops "products used" (2w ×4), "sign in" (2w ×2) and the
+  // stat shards "135+", "$1.9t", "99.999%", "200m+" (1w each) — the short
+  // labels the fix targets. The real 22-word repeated paragraph and all
+  // opening/near-identical receipts survive.
   const rep = runRules(text).repetitive;
-  assert.equal(rep.score, 44);
+  assert.equal(rep.score, 41);
   assert.equal(rep.findings.some((f) => f.startsWith('repeated phrase in the page text:')), false);
 });
 

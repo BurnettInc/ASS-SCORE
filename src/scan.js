@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { extractText, extractMainText, extractHead, extractReadableText } from './text.js';
+import { extractText, extractBodyText, extractMainText, extractHead, extractReadableText, extractBodyReadableText } from './text.js';
 import { runRules } from './rules/index.js';
+import { analyze as analyzeBoilerplate } from './rules/boilerplate.js';
 import { computeSlopScore } from './scorer.js';
 import { discoverPages } from './rules/discover.js';
 import { analyzeCrossPage, DUPLICATION_THRESHOLD } from './rules/crossPage.js';
@@ -138,6 +139,13 @@ export async function runScan({ db, fetcher, url, branding = null, businessName 
     readable = null;
   }
 
+  // BODY-ONLY corpus for the repetition family (INVESTIGATION FIX 2026-10-16):
+  // strips <nav>/<header>/<footer>/<button> so chrome labels ("Contact", "Home",
+  // "Book a call") can never count as repeated writing. The repetitive rule,
+  // crossPage's in-page phrase detector and boilerplate's dup-blocks read this;
+  // filler, boilerplate regex signals and infoDensity keep the FULL corpus.
+  const bodyText = extractBodyText(page.body);
+  const bodyReadable = extractBodyReadableText(page.body);
   // --- discovery + additional fetches (budget-aware, concurrent) -------------
   let pages = [{ url: page.url, html: page.body }]; // target first, deterministic order
   const skipped = [];
@@ -242,7 +250,7 @@ export async function runScan({ db, fetcher, url, branding = null, businessName 
     pages: pages.map((p, i) => ({
       url: p.url,
       main: perPage.get(p.url).main,
-      ...(i === 0 ? { sentences: text.sentences, paragraphs: text.paragraphs, title: text.title, readable } : {}),
+      ...(i === 0 ? { sentences: bodyText.sentences, paragraphs: bodyText.paragraphs, title: bodyText.title, readable: bodyReadable } : {}),
     })),
     skeleton,
   });
@@ -259,8 +267,15 @@ export async function runScan({ db, fetcher, url, branding = null, businessName 
   const assets = analyzeAssets(page.body);
 
   // --- v1 breakdown on the target + new categories ---------------------------
+  const fullRules = runRules(text, readable);
   const breakdown = {
-    ...runRules(text, readable),
+    filler: fullRules.filler,
+    // boilerplate: regex signals scan the FULL text (cookie/legal/CTA
+    // boilerplate legitimately lives in footers), but the repeated-block term
+    // reads BODY-only paragraphs so "4× Contact" nav/footer entries vanish.
+    boilerplate: analyzeBoilerplate({ ...text, paragraphs: bodyText.paragraphs }, readable),
+    infoDensity: fullRules.infoDensity,
+    repetitive: runRules(bodyText, bodyReadable).repetitive,
     crossPage,
     fingerprints,
     assets,
