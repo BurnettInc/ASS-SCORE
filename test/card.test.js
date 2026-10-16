@@ -451,10 +451,9 @@ test('card polish (b): ass-score.com URL moved out of the top-right text band in
     // are the accent's own color-matched core pixels. (Recalibrated for the
     // 2026-09-24 donkey swap: the old 372×580 head sat at card y≥66 and poked
     // bright sunglasses pixels into this band, inflating the old blanket
-    // brightness count past 100; the 1191×1186 meet-fit head started at y≈215.
-    // 2026-10-16 photo swap: the 1485×1059 subject starts at y≈250, so the
-    // band still measures the accent alone — measured 7: 132 lime px, 50: 64
-    // pink px, 93: 386 pink px.)
+    // brightness count past 100; the 1191×1186 meet-fit head starts at y≈215,
+    // so the band now measures the accent alone — measured 7: 132 lime px,
+    // 50: 64 pink px, 93: 386 pink px.)
     const accentPreds = {
       7: (r, g, b2) => matchRgb(r, g, b2, [0xd4, 0xf0, 0x00]),
       50: (r, g, b2) => matchRgb(r, g, b2, [0xff, 0x3d, 0x8e]),
@@ -485,94 +484,82 @@ test('card polish (c): sign header fully visible — no donkey pixels cover the 
     assert.ok(paper > 500, `score ${score}: white sign paper visible (${paper} px)`);
   }
 
-  // Donkey-photo clearance in the sign band (card y 538-774). The committed
-  // donkey-sharecard.png (owner swap 2026-10-16) is the 1485×1059 RGB photo
-  // rendered with preserveAspectRatio="xMidYMid meet" into the 670×482 zone at
-  // (910,212): scale = min(670/1485, 482/1059) ≈ 0.4512 → 670×478, the subject
-  // (asset x 441-1108 / y 79-1030) landing at card ≈ 1109-1410 / 250-679,
-  // vertically centered on the old cutout's y-center (≈462). The photo's left
-  // margin is pure black (blends with the card); the donkey stays clear of the
-  // sign's rotated right edge (≈1102 at the top, sloping to ≈1090 at the
-  // bottom): the first photo-owned bright pixel per row sits ≥ ~2px right of
-  // the edge (measured worst 2.1-5.2px at the donkey's lower-left fringe).
-  // Because the photo is full-bleed RGB (no alpha), "photo-owned" means
-  // differs from the no-donkey render — the sign itself is identical in both,
-  // and its paper/header floors above prove it renders unobstructed on top.
+  // Donkey-zone alpha coverage in the sign band (card y 538-774). The
+  // committed donkey-sharecard.png is the near-square 1191×1186 cutout rendered
+  // with preserveAspectRatio="xMidYMid meet": scale = min(510/1191, 795/1186)
+  // ≈ 0.4282 → full-box footprint 510×508, vertically centered at card y
+  // ≈ 209.5-717.5 (asset row 0 ↔ card y 209.5, asset row 1186 ↔ card y 717.5).
+  // In asset coordinates the sign band (card y 538-717.5) spans asset y
+  // 766-1186 (the donkey's lower body/legs) and the sign's right edge (card x
+  // 1096) maps to asset x ≈ 61. The cutout's content starts at asset x 209, so
+  // the whole sign-overlap sliver (card x 1070-1096 ↔ asset x 0-61, every row
+  // of it) is donkey-free while the torso remains present to its right.
   const asset = fs.readFileSync(new URL('../src/assets/donkey-sharecard.png', import.meta.url));
-  const { info: ainfo } = await sharp(asset).raw().toBuffer({ resolveWithObject: true });
-  assert.equal(ainfo.width, 1485, 'asset is the 1485px-wide owner upload');
-  assert.equal(ainfo.height, 1059);
-  assert.equal(ainfo.channels, 3, 'RGB photo — no alpha channel (full-bleed black background)');
-  // Sign's rotated right edge: the un-rotated sign rect's right corners
-  // (1096,538) and (1096,774) rotated 3° about (898,656).
-  const edgeX = (y) => 1101.9 - ((1101.9 - 1089.5) * (y - 548.5)) / (784.2 - 548.5);
-  for (const { score } of CARDS) {
-    const png = await renderCardPng(buildCardSvg({ score, url: 'https://www.example.com' }));
-    const noDonkey = await renderCardPng(buildCardSvg({ score, url: 'https://www.example.com' }).replace(/<image [^>]*\/>/, ''));
-    const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
-    const dn = await sharp(noDonkey).raw().toBuffer();
-    let worst = Infinity;
-    for (let y = 538; y <= 774; y += 1) {
-      const edge = edgeX(y);
-      for (let x = Math.ceil(edge) + 1; x < 1580; x += 1) {
-        const i = (y * info.width + x) * info.channels;
-        const photoOwned = data[i] !== dn[i] || data[i + 1] !== dn[i + 1] || data[i + 2] !== dn[i + 2];
-        if (photoOwned && data[i] + data[i + 1] + data[i + 2] > 30) {
-          worst = Math.min(worst, x - edge);
-          break;
-        }
+  const { data: adata, info: ainfo } = await sharp(asset).raw().toBuffer({ resolveWithObject: true });
+  assert.equal(ainfo.width, 1191, 'asset is the 1191px-wide approved share-card cutout');
+  assert.equal(ainfo.height, 1186);
+  const M_SCALE = Math.min(510 / ainfo.width, 795 / ainfo.height); // meet scale ≈ 0.4282
+  const meetTop = 66 + (795 - ainfo.height * M_SCALE) / 2; // card y of asset row 0 ≈ 209.5
+  const ax = (cardX) => (cardX - 1070) / M_SCALE; // card x -> asset x
+  const ay = (cardY) => (cardY - meetTop) / M_SCALE; // card y -> asset y
+  const sliverX = Math.ceil(ax(1096)); // sign right edge (card 1096) -> asset x ≈ 61
+  const bandY0 = Math.floor(ay(538)); // sign top row (card 538) -> asset y ≈ 766
+  const opaqueIn = (x0, x1) => {
+    let n = 0;
+    for (let y = bandY0; y < ainfo.height; y += 1) {
+      for (let x = x0; x < x1; x += 1) {
+        if (adata[(y * ainfo.width + x) * 4 + 3] > 10) n += 1;
       }
     }
-    assert.ok(Number.isFinite(worst), `score ${score}: donkey content present in the sign band`);
-    assert.ok(worst >= 1, `score ${score}: donkey clear of the sign right edge (worst clearance ${worst.toFixed(2)}px)`);
-    assert.ok(worst <= 15, `score ${score}: donkey actually reaches up to the sign band (worst clearance ${worst.toFixed(2)}px)`);
+    return n;
+  };
+  assert.equal(opaqueIn(0, sliverX), 0, 'sign overlap sliver (asset x 0-61 across the whole sign band) contains no donkey pixels');
+  const body = opaqueIn(sliverX, ainfo.width);
+  assert.ok(body > 100000, `torso present right of the sign edge (${body} opaque px in band)`);
+  // The body's left edge is well clear of the new sign right edge (asset x 61):
+  let minX = ainfo.width;
+  for (let y = bandY0; y < ainfo.height; y += 1) {
+    for (let x = sliverX; x < ainfo.width; x += 1) {
+      if (adata[(y * ainfo.width + x) * 4 + 3] > 10 && x < minX) minX = x;
+    }
   }
+  assert.ok(minX >= 470, `torso left edge at asset x ${minX} — clear of sign edge x ${sliverX}`);
 });
 
-test('donkey meet fit: committed asset byte-verbatim, footprint contained in the zone, meet math 670×478 centered', async () => {
+test('donkey meet fit: committed asset byte-verbatim, footprint contained in the zone, meet math 510×508 centered', async () => {
   // (a) The committed asset is the owner-approved file, byte-for-byte, with a
   // durable sha256 pin (a later swap can't sneak in undetected even where the
-  // source file isn't present on the machine running the tests). 2026-10-16
-  // swap: the 1191×1186 RGBA cutout was replaced by the owner's LiveScanDonkey
-  // photo (1485×1059 RGB, black background) — pinned below.
+  // source file isn't present on the machine running the tests).
   const committed = fs.readFileSync(new URL('../src/assets/donkey-sharecard.png', import.meta.url));
-  const SOURCE = '/home/team/shared/LiveScanDonkey.png';
+  const SOURCE = '/home/team/shared/NewSharecarddonkey.png';
   if (fs.existsSync(SOURCE)) {
     assert.ok(committed.equals(fs.readFileSync(SOURCE)), 'committed asset equals the owner-provided file byte-for-byte');
   }
   assert.equal(
     createHash('sha256').update(committed).digest('hex'),
-    '94f002ee0035858318cf58e4eb876880dd88fc317f773abf28b0cb1ca436aebb',
-    'committed donkey-sharecard.png is the pinned owner upload (2026-10-16)',
+    'e7a647c240cc77f3e97177bc8cf4b4a0e9dd7108df69274ce13289f68a611b78',
+    'committed donkey-sharecard.png is the pinned approved cutout',
   );
 
-  // (c) meet math: scale = min(670/1485, 482/1059) ≈ 0.4512 -> 670×478,
-  // vertically centered inside the fixed zone (212..694; the ≤2px black
-  // letterbox is invisible on the black card).
-  const { width, height, channels } = await sharp(committed).metadata();
-  assert.equal(width, 1485);
-  assert.equal(height, 1059);
-  assert.equal(channels, 3, 'RGB photo — no alpha (full-bleed black background)');
-  const scale = Math.min(670 / width, 482 / height);
-  const fitW = width * scale; // ≈ 670.0
-  const fitH = height * scale; // ≈ 477.8
-  assert.ok(Math.abs(fitW - 670) <= 2, `meet width ${fitW}`);
-  assert.ok(Math.abs(fitH - 478) <= 2, `meet height ${fitH}`);
-  const fitY = 212 + (482 - fitH) / 2; // ≈ 214.1
-  const fitBottom = fitY + fitH; // ≈ 691.9
-  assert.ok(fitY >= 212 && fitBottom <= 694, 'meet box fully inside the zone');
-  assert.ok(Math.abs((fitY - 212) - (694 - fitBottom)) <= 1, 'vertically centered (equal top/bottom margins)');
-  // The subject lands where the old cutout stood: asset x 441-1108 / y 79-1030
-  // -> card x ≈ 1109-1410, y ≈ 250-679 (vertical center ≈ 462, matching the
-  // old cutout's ≈ 462), and its left edge stays clear of the sign (≈1102).
-  const subjY = fitY + ((79 + 1030) / 2) * scale;
-  assert.ok(Math.abs(subjY - 462) <= 6, `subject vertical center ≈ ${subjY.toFixed(1)} (old ≈ 462)`);
-  assert.ok(910 + 441 * scale >= 1104, `subject left edge ${(910 + 441 * scale).toFixed(1)} clear of the sign (≈1102)`);
+  // (c) meet math: scale = min(510/1191, 795/1186) ≈ 0.4282 -> 510×508,
+  // vertically centered inside the fixed zone (66..861).
+  const { width, height } = await sharp(committed).metadata();
+  assert.equal(width, 1191);
+  assert.equal(height, 1186);
+  const scale = Math.min(510 / width, 795 / height);
+  const fitW = width * scale; // ≈ 510.0
+  const fitH = height * scale; // ≈ 507.9
+  assert.ok(Math.abs(fitW - 510) <= 2, `meet width ${fitW}`);
+  assert.ok(Math.abs(fitH - 508) <= 2, `meet height ${fitH}`);
+  const fitY = 66 + (795 - fitH) / 2; // ≈ 209.6
+  const fitBottom = fitY + fitH; // ≈ 717.4
+  assert.ok(fitY >= 66 && fitBottom <= 861, 'meet box fully inside the zone');
+  assert.ok(Math.abs((fitY - 66) - (861 - fitBottom)) <= 1, 'vertically centered (equal top/bottom margins)');
 
   // (b) Rendered footprint: diff the card with vs without the <image> element.
-  // The changed pixels are exactly the photo's on-card content (everything
+  // The changed pixels are exactly the donkey's on-card content (everything
   // else is identical — the accents/sign/URL paint over or clear of the zone).
-  // Assert the bbox stays inside x910-1580 / y212-694 for every band.
+  // Assert the bbox stays inside x1070-1580 / y66-861 for every band.
   for (const { score } of CARDS) {
     const png = await renderCardPng(buildCardSvg({ score, url: 'https://www.example.com' }));
     const noDonkey = await renderCardPng(buildCardSvg({ score, url: 'https://www.example.com' }).replace(/<image [^>]*\/>/, ''));
@@ -586,15 +573,15 @@ test('donkey meet fit: committed asset byte-verbatim, footprint contained in the
           changed += 1;
           if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
           if (y < by0) by0 = y; if (y > by1) by1 = y;
-          if (x < 910 || x >= 1580 || y < 212 || y >= 694) oob += 1;
+          if (x < 1070 || x >= 1580 || y < 66 || y >= 861) oob += 1;
         }
       }
     }
-    assert.ok(changed > 200000, `score ${score}: photo footprint present on the card (${changed} px)`);
+    assert.ok(changed > 50000, `score ${score}: donkey footprint present on the card (${changed} px)`);
     assert.equal(oob, 0, `score ${score}: zero changed pixels outside the zone`);
-    assert.ok(bx0 >= 910 && by0 >= 212 && bx1 < 1580 && by1 < 694, `score ${score}: bbox ${bx0},${by0}-${bx1},${by1} inside x910-1580 / y212-694`);
+    assert.ok(bx0 >= 1070 && by0 >= 66 && bx1 < 1580 && by1 < 861, `score ${score}: bbox ${bx0},${by0}-${bx1},${by1} inside x1070-1580 / y66-861`);
     const bh = by1 - by0 + 1;
-    assert.ok(bh >= 465 && bh <= 490, `score ${score}: rendered content height ${bh} px (meet box ≈ 478)`);
+    assert.ok(bh >= 470 && bh <= 510, `score ${score}: rendered content height ${bh} px (content ≈ 495, meet box ≈ 508)`);
   }
 });
 
