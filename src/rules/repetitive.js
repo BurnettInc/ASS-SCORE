@@ -15,6 +15,13 @@ import { readableSentenceFor, readableOpeningSentenceFor, readableParagraphFor, 
 import { short } from '../truncate.js';
 
 const OPENING_WORDS = 3;
+/** INVESTIGATION FIX 2026-10-16: minimum word count for a repeated item to
+ *  count (sentences, openings, paragraphs). Kills 1-2 word chrome repetition
+ *  ("Contact", "Home", "Book a call", "Chat") while keeping real repeated
+ *  body sentences/phrases, which are 5+ words in practice (cache evidence:
+ *  every real body duplicate in the audit corpus was >= 5 words). */
+const MIN_REPEATED_WORDS = 3;
+const itemWordCount = (s) => String(s).split(/\s+/).filter(Boolean).length;
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -54,7 +61,7 @@ export function analyze({ text = '', sentences = [], paragraphs = [] } = {}, rea
   let openingSub = 0;
   if (sentenceCount >= 6) {
     const openings = sentences.map((s) => firstWords(s, OPENING_WORDS)).filter(Boolean);
-    const dupOpenings = findDuplicates(openings);
+    const dupOpenings = findDuplicates(openings).filter((d) => itemWordCount(d.value) >= MIN_REPEATED_WORDS);
     const extras = dupOpenings.reduce((s, d) => s + (d.count - 1), 0);
     const ratio = extras / sentenceCount;
     openingSub = clamp(ratio * 220, 0, 100); // ratio ~0.45 => 100
@@ -62,14 +69,14 @@ export function analyze({ text = '', sentences = [], paragraphs = [] } = {}, rea
 
   // 2. Near-identical sentences (normalized equality).
   const normalized = sentences.map(normalizeSentence).filter((s) => s.length > 0);
-  const dupSentences = findDuplicates(normalized);
+  const dupSentences = findDuplicates(normalized).filter((d) => itemWordCount(d.value) >= MIN_REPEATED_WORDS);
   const sentExtras = dupSentences.reduce((s, d) => s + (d.count - 1), 0);
   const sentSub = clamp((sentExtras / Math.max(1, normalized.length)) * 300, 0, 100);
 
   // 3. Repeated paragraphs.
   let paraSub = 0;
   if (paragraphs.length >= 3) {
-    const dupParas = findDuplicates(paragraphs.map((p) => p.toLowerCase().replace(/\s+/g, ' ').trim()).filter(Boolean));
+    const dupParas = findDuplicates(paragraphs.map((p) => p.toLowerCase().replace(/\s+/g, ' ').trim()).filter(Boolean)).filter((d) => itemWordCount(d.value) >= MIN_REPEATED_WORDS);
     const paraExtras = dupParas.reduce((s, d) => s + (d.count - 1), 0);
     paraSub = clamp((paraExtras / Math.max(1, paragraphs.length)) * 250, 0, 100);
   }
@@ -101,14 +108,14 @@ export function analyze({ text = '', sentences = [], paragraphs = [] } = {}, rea
 
   const findings = [];
   if (openingSub > 0) {
-    const dupOpenings = findDuplicates(sentences.map((s) => firstWords(s, OPENING_WORDS)).filter(Boolean));
+    const dupOpenings = findDuplicates(sentences.map((s) => firstWords(s, OPENING_WORDS)).filter(Boolean)).filter((d) => itemWordCount(d.value) >= MIN_REPEATED_WORDS);
     findings.push(`repeated sentence openings: ${dupOpenings.slice(0, 3).map((d) => `${d.count}× "${openingQuote(d)}"`).join(', ')}`);
   }
   if (sentSub > 0) {
     findings.push(`near-identical sentences: ${dupSentences.slice(0, 3).map((d) => `${d.count}× "${sentenceQuote(d)}"`).join(', ')}`);
   }
   if (paraSub > 0) {
-    const dupParas = findDuplicates(paragraphs.map((p) => p.toLowerCase().replace(/\s+/g, ' ').trim()).filter(Boolean));
+    const dupParas = findDuplicates(paragraphs.map((p) => p.toLowerCase().replace(/\s+/g, ' ').trim()).filter(Boolean)).filter((d) => itemWordCount(d.value) >= MIN_REPEATED_WORDS);
     findings.push(`repeated paragraphs: ${dupParas.slice(0, 3).map((d) => `${d.count}× "${paragraphQuote(d)}"`).join(', ')}`);
   }
   if (findings.length === 0) {

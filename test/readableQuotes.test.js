@@ -259,7 +259,7 @@ test('readable: extractReadableText inserts ONE space at adjacent element bounda
 // scores to the unmodified path, and detection is preserved.
 // ---------------------------------------------------------------------------
 
-test('GATE1 price+CTA: the reported "advertise now 29 99 30" reads "Advertise now $29.99 · 30 day plan"; composite stays 34', () => {
+test('GATE1 price+CTA: the reported "advertise now 29 99 30" reads "Advertise now $29.99 · 30 day plan"; composite 34 -> 33', () => {
   const r = runBoth(PRICE_CTA);
   // The unmodified path still produces the reported garble (fixture is really
   // garble-affected — the fix, not the fixture, changed the receipt).
@@ -279,8 +279,12 @@ test('GATE1 price+CTA: the reported "advertise now 29 99 30" reads "Advertise no
     r.fixed.repetitive.findings.some((f) => f === 'near-identical sentences: 3× "Featured listing Get featured on the homepage for 30 days."'),
     JSON.stringify(r.fixed.repetitive.findings),
   );
+  // Change (chrome-repetition fix 2026-10-16, MIN_REPEATED_WORDS = 3): the
+  // 2-word repeated h2 "Featured listing" no longer counts as a repeated
+  // PARAGRAPH — exactly the short repeated label the fix targets. The 10-word
+  // body sentence keeps its readable paragraph receipt.
   assert.ok(
-    r.fixed.repetitive.findings.some((f) => f === 'repeated paragraphs: 3× "Featured listing", 3× "Get featured on the homepage for 30 days."'),
+    r.fixed.repetitive.findings.some((f) => f === 'repeated paragraphs: 3× "Get featured on the homepage for 30 days."'),
     JSON.stringify(r.fixed.repetitive.findings),
   );
   // COPY (boilerplate): repeated blocks readable.
@@ -295,7 +299,10 @@ test('GATE1 price+CTA: the reported "advertise now 29 99 30" reads "Advertise no
   assert.equal(r.fixed.crossPage.score, 10);
   assert.deepEqual(r.fixedScores, r.plainScores, 'all 7 category scores identical with/without readable');
   assert.equal(r.fixedComposite, r.plainComposite);
-  assert.equal(r.fixedComposite, 34, 'investigation-pinned composite (fingerprints 5 incl.)');
+  // 34 -> 33 (chrome-repetition fix 2026-10-16): the 2-word repeated h2 no
+  // longer feeds STRUCTURE's repeated-paragraph term (see the receipt change
+  // above); both paths moved identically, so the plain/fixed parity holds.
+  assert.equal(r.fixedComposite, 33, 'investigation-pinned composite after MIN_REPEATED_WORDS (fingerprints 5 incl.)');
 });
 
 test('GATE1 stat+label: "12 000 customers" reads "12,000+ customers"; scores unchanged', () => {
@@ -390,7 +397,13 @@ test('GATE2 all families: REPETITION/STRUCTURE/MESSAGING/COPY quotes all readabl
     JSON.stringify(rep),
   );
   assert.ok(g(rep, 'near-identical sentences: 3× "12,000+ customers served.", 3× "Featured listing Get featured on the homepage for 30 days."'), JSON.stringify(rep));
-  assert.ok(g(rep, 'repeated paragraphs: 3× "12,000+ customers served.", 3× "Featured listing", 3× "Get featured on the homepage for 30 days."'), JSON.stringify(rep));
+  // Change (chrome-repetition fix 2026-10-16, MIN_REPEATED_WORDS = 3): the
+  // 2-word repeated h2 "Featured listing" no longer counts, and the GLUED stat
+  // paragraph "12,000+customers served." tokenizes to only 2 tokens
+  // ("12,000+customers" + "served.") in the analysis corpus, so it drops too —
+  // exactly the short repeated labels the fix targets. Paragraph-sentence
+  // quotes (the 10-word "Get featured…" body line) stay readable and fire.
+  assert.ok(g(rep, 'repeated paragraphs: 3× "Get featured on the homepage for 30 days."'), JSON.stringify(rep));
   // Plain-path STRUCTURE garble: punctuation-removal melds "12,000+" into
   // "12000"; the boundary-spaced sentence corpus keeps the word space, so the
   // meld is "12000 customers served" (was "12000customers served" on the old
@@ -458,18 +471,30 @@ test('GATE2 ORIGINALITY/assets: fingerprints (ORIGINALITY) and assets quote NO p
 // Full-pipeline integration: runScan wires the readable corpus automatically —
 // the reported quote appears fixed in the scan PAYLOAD with the pinned score.
 // ---------------------------------------------------------------------------
-test('integration: runScan produces readable phrase receipts end-to-end; pinned slopScore 34 unchanged', () => {
+test('integration: runScan produces readable phrase receipts end-to-end; composite 34 -> 31 under the chrome-repetition fix', () => {
   const fetcher = {
     fetchHtml: async () => ({ url: 'https://publishyoursaas.com/', status: 200, contentType: 'text/html', body: PRICE_CTA }),
   };
   return runScan({ db: { insertScan: () => {} }, fetcher, url: 'https://publishyoursaas.com/', scanBudgetMs: 8000 }).then(({ ok, payload }) => {
     assert.equal(ok, true);
-    assert.equal(payload.slopScore, 34, 'investigation-pinned full-pipeline composite (Option B never feeds scores)');
+    // Chrome-repetition fix 2026-10-16: the <button> "Advertise now" (3×) no
+    // longer enters the repetition-family corpus, so the full-pipeline
+    // composite drops 34 -> 31. The button text was a 3× repeated opening
+    // under STRUCTURE; with it excluded the remaining BODY repetition still
+    // scores, just honestly (verified offline against the recorded crawl of
+    // publishyoursaas.com: 40 -> 37 with the same mechanism).
+    assert.equal(payload.slopScore, 31, 'post-chrome-fix full-pipeline composite');
     const cp = payload.breakdown.crossPage.findings;
-    assert.ok(cp.some((f) => f === 'repeated phrase in the page text: 3× "Advertise now $29.99 · 30 day plan" — in 3 paragraphs'), JSON.stringify(cp));
+    // The button-only phrase no longer exists in the payload (chrome excluded
+    // from the in-page phrase corpus) — that is the fix, asserted explicitly.
+    assert.ok(!cp.some((f) => f.includes('Advertise now')), JSON.stringify(cp));
+    // The real BODY phrase still fires with its readable quote.
     assert.ok(cp.some((f) => f === 'repeated phrase in the page text: 3× "Featured listing Get featured on the homepage for 30 days"'), JSON.stringify(cp));
     const rep = payload.breakdown.repetitive.findings;
-    assert.ok(rep.some((f) => f.includes('"Advertise now $29.99…"')), JSON.stringify(rep));
+    // BODY repetition still quoted readably; the stripped button text is gone
+    // from the STRUCTURE receipts too.
+    assert.ok(rep.some((f) => f.includes('"$29.99 · 30…"')), JSON.stringify(rep));
+    assert.ok(!JSON.stringify(rep).includes('Advertise now'), 'button text must not appear in STRUCTURE receipts');
     const bp = payload.breakdown.boilerplate.findings;
     assert.ok(bp.some((f) => f === '3× repeated block: "Featured listing"'), JSON.stringify(bp));
     // No normalized garbage reaches the payload reputation surfaces either.
